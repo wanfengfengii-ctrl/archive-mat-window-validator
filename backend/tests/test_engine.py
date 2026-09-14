@@ -7,14 +7,20 @@ from app.engine import (
     INNER_BOTTOM,
     INNER_RIGHT,
     MARGIN,
+    SHAPE_CIRCLE,
+    SHAPE_RECT,
     SHEET_HEIGHT,
     SHEET_WIDTH,
     VERDICT_CUTTABLE,
     VERDICT_REJECTED,
     adjudicate,
+    circle_from_bbox,
+    circle_rect_positive_overlap,
+    circles_positive_overlap,
     field_errors,
     find_defect_conflicts,
     find_pair_conflicts,
+    normalize_shape,
     rects_positive_overlap,
 )
 
@@ -215,3 +221,152 @@ def test_edge_touching_windows_are_cuttable():
         {"id": 2, "x": 350, "y": 300, "w": 50, "h": 50},
     ]
     assert adjudicate(wins)["verdict"] == VERDICT_CUTTABLE
+
+
+# ---------- 圆形开窗 ----------
+
+def test_shape_normalization_defaults_missing_to_rect():
+    assert normalize_shape(None) == SHAPE_RECT
+    assert normalize_shape("rect") == SHAPE_RECT
+    assert normalize_shape("circle") == SHAPE_CIRCLE
+    for bad in ("CIRCLE", "ellipse", 3, True, ["circle"]):
+        with pytest.raises(ValueError):
+            normalize_shape(bad)
+
+
+def test_circle_bbox_to_scaled_triple():
+    # 直径偶数：圆心整数
+    assert circle_from_bbox(240, 150, 40, 40) == (520, 340, 40)
+    # 直径奇数：圆心半整数，放大 2 倍后仍为整数
+    assert circle_from_bbox(240, 150, 41, 41) == (521, 341, 41)
+
+
+def test_circle_inside_defect_conflicts():
+    # 圆心 (260,170) r=20，整个圆落在瑕疵区 [200,280)×[150,190) 内
+    win = {"shape": SHAPE_CIRCLE, "x": 240, "y": 150, "w": 40, "h": 40}
+    assert find_defect_conflicts(win) == [0]
+
+
+def test_circle_externally_tangent_to_defect_is_allowed():
+    # 圆在瑕疵 1 正上方，圆心 (650,400) r=20：圆底点 (650,420)
+    # 恰好外切瑕疵上边线 y=420，允许
+    win = {"shape": SHAPE_CIRCLE, "x": 640, "y": 380, "w": 40, "h": 40}
+    assert find_defect_conflicts(win) == []
+
+
+def test_circle_intrudes_defect_by_one_mm_conflicts():
+    # 圆心下移 1mm：最近距离 19 < 20，侵入 1mm 即冲突
+    win = {"shape": SHAPE_CIRCLE, "x": 640, "y": 381, "w": 40, "h": 40}
+    assert find_defect_conflicts(win) == [1]
+
+
+def test_circle_side_tangent_to_defect_is_allowed():
+    # 圆心 (600,465) r=20：圆右点 (620,465) 外切瑕疵左边线 x=620
+    win = {"shape": SHAPE_CIRCLE, "x": 580, "y": 445, "w": 40, "h": 40}
+    assert find_defect_conflicts(win) == []
+
+
+def test_circle_corner_tangent_to_defect_is_allowed():
+    # 圆心 (310,230) r=50，到瑕疵 0 右下角 (280,190) 的距离
+    # sqrt(30²+40²)=50：角部外切，允许；圆心左移 1mm 即侵入
+    tangent = {"shape": SHAPE_CIRCLE, "x": 260, "y": 180, "w": 100, "h": 100}
+    assert find_defect_conflicts(tangent) == []
+    intruding = {"shape": SHAPE_CIRCLE, "x": 259, "y": 180, "w": 100, "h": 100}
+    assert find_defect_conflicts(intruding) == [0]
+
+
+def test_two_circles_external_tangency_allowed_overlap_conflicts():
+    c1 = {"shape": SHAPE_CIRCLE, "x": 290, "y": 280, "w": 40, "h": 40}
+    tangent = {"shape": SHAPE_CIRCLE, "x": 330, "y": 280, "w": 40, "h": 40}
+    assert find_pair_conflicts([c1, tangent]) == []
+    overlapping = {"shape": SHAPE_CIRCLE, "x": 329, "y": 280, "w": 40, "h": 40}
+    assert find_pair_conflicts([c1, overlapping]) == [(0, 1)]
+
+
+def test_circles_with_half_integer_radii_exact_scaled_comparison():
+    # r=20（直径 40）与 r=19.5（直径 39）：圆心距 38.5mm < 39.5mm → 相交
+    c1 = {"shape": SHAPE_CIRCLE, "x": 290, "y": 280, "w": 40, "h": 40}
+    overlap = {"shape": SHAPE_CIRCLE, "x": 329, "y": 280, "w": 39, "h": 39}
+    assert circles_positive_overlap(
+        circle_from_bbox(290, 280, 40, 40), circle_from_bbox(329, 280, 39, 39)
+    )
+    assert find_pair_conflicts([c1, overlap]) == [(0, 1)]
+    # 右移 1mm：圆心距 39.5mm 恰好外切（放大坐标精确判定，无浮点误差）
+    tangent = {"shape": SHAPE_CIRCLE, "x": 330, "y": 280, "w": 39, "h": 39}
+    assert find_pair_conflicts([c1, tangent]) == []
+
+
+def test_circle_and_rect_window_tangency_vs_intrusion():
+    rect = {"shape": SHAPE_RECT, "x": 330, "y": 280, "w": 60, "h": 40}
+    # 圆 r=20，圆心 (310,300)：圆右点 (330,300) 外切矩形左边线 → 允许
+    tangent = {"shape": SHAPE_CIRCLE, "x": 290, "y": 280, "w": 40, "h": 40}
+    assert find_pair_conflicts([tangent, rect]) == []
+    # 圆右移 1mm：侵入矩形 1mm → 冲突，双方进入冲突列表
+    intruding = {"shape": SHAPE_CIRCLE, "x": 291, "y": 280, "w": 40, "h": 40}
+    assert find_pair_conflicts([intruding, rect]) == [(0, 1)]
+
+
+def test_circle_rect_helper_directly():
+    circle = circle_from_bbox(290, 280, 40, 40)
+    assert not circle_rect_positive_overlap(circle, (330, 280, 60, 40))
+    assert circle_rect_positive_overlap(circle, (329, 280, 60, 40))
+
+
+def test_circle_requires_equal_width_and_height():
+    assert field_errors(300, 300, 40, 41, shape=SHAPE_CIRCLE) != {}
+    errs = field_errors(300, 300, 40, 41, shape=SHAPE_CIRCLE)
+    assert set(errs) == {"w", "h"}
+    assert "相等" in errs["w"]
+    # 矩形开窗宽高不等没有这条错误
+    assert field_errors(300, 300, 40, 41, shape=SHAPE_RECT) == {}
+    # 合法圆形
+    assert field_errors(302, 302, 105, 105, step=5, shape=SHAPE_CIRCLE) == {}
+
+
+def test_circle_grid_validation_uses_diameter():
+    # 圆形直径同样要落在步长刻度上
+    errs = field_errors(302, 302, 103, 103, step=5, shape=SHAPE_CIRCLE)
+    assert set(errs) == {"w", "h"}
+
+
+def test_adjudicate_mixed_shapes_marks_both():
+    wins = [
+        {"id": 1, "shape": SHAPE_CIRCLE, "x": 291, "y": 280, "w": 40, "h": 40},
+        {"id": 2, "shape": SHAPE_RECT, "x": 330, "y": 280, "w": 60, "h": 40},
+    ]
+    out = adjudicate(wins)
+    assert out["verdict"] == VERDICT_REJECTED
+    assert out["window_conflicts"] == [{"window_a": 1, "window_b": 2}]
+    assert out["conflicting_window_ids"] == [1, 2]
+
+
+def test_adjudicate_circle_defect_conflict():
+    wins = [{"id": 9, "shape": SHAPE_CIRCLE, "x": 640, "y": 381, "w": 40, "h": 40}]
+    out = adjudicate(wins)
+    assert out["verdict"] == VERDICT_REJECTED
+    assert out["defect_conflicts"] == [{"window_id": 9, "defect_index": 1}]
+    assert out["conflicting_window_ids"] == [9]
+
+
+def test_adjudicate_missing_shape_reads_as_rect():
+    # 旧调用方：没有 shape 字段时按矩形裁决
+    wins = [
+        {"id": 1, "x": 300, "y": 300, "w": 50, "h": 50},
+        {"id": 2, "x": 340, "y": 340, "w": 50, "h": 50},
+    ]
+    out = adjudicate(wins)
+    assert out["verdict"] == VERDICT_REJECTED
+    assert out["window_conflicts"] == [{"window_a": 1, "window_b": 2}]
+
+
+def test_adjudicate_circle_tangent_plan_is_cuttable():
+    # 圆与瑕疵 1 外切（圆底点 (650,420)），矩形开窗在圆右侧边线相接：
+    # 整案可裁切
+    wins = [
+        {"id": 1, "shape": SHAPE_CIRCLE, "x": 640, "y": 380, "w": 40, "h": 40},
+        {"id": 2, "shape": SHAPE_RECT, "x": 680, "y": 380, "w": 40, "h": 40},
+    ]
+    out = adjudicate(wins)
+    assert out["verdict"] == VERDICT_CUTTABLE
+    assert out["defect_conflicts"] == []
+    assert out["window_conflicts"] == []

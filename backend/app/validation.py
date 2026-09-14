@@ -3,6 +3,10 @@
 故意不使用 Pydantic 的隐式转换：坐标和尺寸必须是 JSON 整数，
 3.5、"5"、true 都应被拒绝并逐字段报错。
 
+可选开窗形状（shape）：缺省或 null 视为矩形（旧客户端）；
+只接受 "rect" / "circle"。圆形开窗要求宽高相等（直径），
+非法形状与宽高不等都按行给出字段错误，且整次不落库。
+
 可选工件编号（label）：缺省或 null 视为未填写；字符串去首尾空格后
 长度 ≤ 24，且同一批提交内不得重复。编号非法同样按行给出字段错误。
 
@@ -14,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .engine import DEFAULT_STEP, GRID_STEPS, field_errors
+from .engine import DEFAULT_STEP, GRID_STEPS, SHAPE_CIRCLE, SHAPE_RECT, field_errors
 
 MAX_WINDOWS = 500
 MAX_LABEL_LENGTH = 24
@@ -22,6 +26,17 @@ MAX_LABEL_LENGTH = 24
 
 def _is_json_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
+
+
+def normalize_shape(raw: Any) -> str:
+    """把通过校验的形状值规范化为落库值。
+
+    缺省/None → 矩形（旧客户端与旧记录）；只有 rect/circle 放行，
+    非法类型已在 validate_payload 中逐字段拒绝，不会走到这里。
+    """
+    if raw in (SHAPE_CIRCLE,):
+        return SHAPE_CIRCLE
+    return SHAPE_RECT
 
 
 def normalize_label(raw: Any) -> str | None:
@@ -79,20 +94,33 @@ def validate_payload(body: Any) -> list[dict[str, dict[str, str]]]:
             add_error(index, "_", "每个开窗必须是包含 x/y/w/h 的对象")
             continue
 
+        # --- 可选形状：缺省/null 按矩形（旧客户端），其余必须是 rect/circle ---
+        shape = SHAPE_RECT
+        if "shape" in item and item["shape"] is not None:
+            raw_shape = item["shape"]
+            if not isinstance(raw_shape, str) or raw_shape not in (SHAPE_RECT, SHAPE_CIRCLE):
+                add_error(
+                    index,
+                    "shape",
+                    f"形状必须是 {SHAPE_RECT} 或 {SHAPE_CIRCLE}",
+                )
+                # 形状非法时几何字段仍按矩形跑完其余校验；
+                # “圆形宽高必须相等”只在 shape=circle 时才适用，不附加
+            else:
+                shape = raw_shape
+
         missing = [key for key in ("x", "y", "w", "h") if key not in item]
         for key in missing:
             add_error(index, key, "缺少该字段")
-        if missing:
-            continue
-
-        x, y, w, h = item["x"], item["y"], item["w"], item["h"]
-        if not all(_is_json_int(v) for v in (x, y, w, h)):
-            for key, v in (("x", x), ("y", y), ("w", w), ("h", h)):
-                if not _is_json_int(v):
-                    add_error(index, key, "必须为整数")
-        else:
-            for key, message in field_errors(x, y, w, h, step).items():
-                add_error(index, key, message)
+        if not missing:
+            x, y, w, h = item["x"], item["y"], item["w"], item["h"]
+            if not all(_is_json_int(v) for v in (x, y, w, h)):
+                for key, v in (("x", x), ("y", y), ("w", w), ("h", h)):
+                    if not _is_json_int(v):
+                        add_error(index, key, "必须为整数")
+            else:
+                for key, message in field_errors(x, y, w, h, step, shape).items():
+                    add_error(index, key, message)
 
         # --- 可选工件编号 ---
         raw_label = item.get("label")

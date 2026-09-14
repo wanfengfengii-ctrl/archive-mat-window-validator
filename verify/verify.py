@@ -390,7 +390,214 @@ def main():
     status, restored = request("GET", f"{API_URL}/api/layout")
     check("旧格式布局刷新后步长恢复为 1", restored["step"] == 1, restored)
 
-    section("10. 经 web（nginx）反代的端到端接线")
+    section("10. 圆形观察窗（矩形↔圆形）")
+
+    # --- 矩形切换圆形后的确定尺寸 ---
+    # 先在 5 毫米步长下保存矩形 (307,312) 115×65
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"step": 5, "windows": [{"x": 307, "y": 312, "w": 115, "h": 65}]},
+    )
+    check("矩形方案先保存", status == 200 and body["verdict"] == "可裁切", body)
+    # 切换圆形：以宽高中较小值 65 作为直径（恰在 5 毫米刻度上），
+    # 位置仍为同一画布上的 (307,312)
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "step": 5,
+            "windows": [
+                {"shape": "circle", "x": 307, "y": 312, "w": 65, "h": 65}
+            ],
+        },
+    )
+    check(
+        "矩形切换圆形后尺寸确定：shape=circle、宽高相等均为直径 65",
+        status == 200
+        and body["windows"][0]["shape"] == "circle"
+        and (body["windows"][0]["w"], body["windows"][0]["h"]) == (65, 65),
+        body,
+    )
+
+    # --- 圆与瑕疵外切可保存 ---
+    # 圆心 (650,400) r=20：圆底点 (650,420) 恰好外切瑕疵 1 上边线 y=420
+    tangent_circle = {"shape": "circle", "x": 630, "y": 380, "w": 40, "h": 40}
+    status, body = request("PUT", f"{API_URL}/api/layout", {"windows": [tangent_circle]})
+    check("圆与瑕疵外切 → 可裁切并保存", status == 200 and body["verdict"] == "可裁切", body)
+    check(
+        "外切圆形落库后刷新仍为可裁切且形状为 circle",
+        request("GET", f"{API_URL}/api/layout")[1]["verdict"] == "可裁切"
+        and request("GET", f"{API_URL}/api/layout")[1]["windows"][0]["shape"] == "circle",
+    )
+    # 圆心下移 1 毫米：侵入瑕疵 1 一毫米即不可裁切
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{**tangent_circle, "y": 381}]},
+    )
+    circle_id = body["windows"][0]["id"]
+    check(
+        "圆侵入瑕疵 1 毫米 → 不可裁切，明细指出瑕疵 1",
+        body["verdict"] == "不可裁切"
+        and body["result"]["defect_conflicts"]
+        == [{"window_id": circle_id, "defect_index": 1}]
+        and body["result"]["conflicting_window_ids"] == [circle_id],
+        body,
+    )
+
+    # 圆心 (310,230) r=50：到瑕疵 0 右下角 (280,190) 距离恰为 50，角部外切允许
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"shape": "circle", "x": 260, "y": 180, "w": 100, "h": 100}]},
+    )
+    check("圆与瑕疵角部外切 → 可裁切", body["verdict"] == "可裁切", body)
+
+    # --- 圆与圆：外切允许，互相侵入即冲突 ---
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"shape": "circle", "x": 290, "y": 280, "w": 40, "h": 40},
+                {"shape": "circle", "x": 330, "y": 280, "w": 40, "h": 40},
+            ]
+        },
+    )
+    check("两圆外切（圆心距=半径和）→ 可裁切", body["verdict"] == "可裁切", body)
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"shape": "circle", "x": 290, "y": 280, "w": 40, "h": 40},
+                {"shape": "circle", "x": 329, "y": 280, "w": 40, "h": 40},
+            ]
+        },
+    )
+    check("两圆靠近 1 毫米 → 不可裁切", body["verdict"] == "不可裁切", body)
+
+    # --- 圆与矩形开窗侵入一毫米：双方高亮 ---
+    # 矩形 [670,710)×[380,420)：与瑕疵 1 仅在 (670,420) 边线相接，本身干净
+    rect_window = {"x": 670, "y": 380, "w": 40, "h": 40}
+    # 圆心 (650,400) r=20：圆右点 (670,400) 外切矩形左边线，圆底外切瑕疵 1
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [rect_window, tangent_circle]},
+    )
+    check("圆与矩形开窗边线外切 → 可裁切", body["verdict"] == "可裁切", body)
+    # 圆心右移 1mm：圆右点 671 侵入矩形 1 毫米；圆与瑕疵 1 仍为外切
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                rect_window,
+                {"shape": "circle", "x": 631, "y": 380, "w": 40, "h": 40},
+            ]
+        },
+    )
+    ids = [w["id"] for w in body["windows"]]
+    check(
+        "圆侵入矩形开窗 1 毫米 → 不可裁切，双方进入冲突列表",
+        body["verdict"] == "不可裁切"
+        and body["result"]["window_conflicts"]
+        == [{"window_a": ids[0], "window_b": ids[1]}]
+        and body["result"]["conflicting_window_ids"] == sorted(ids)
+        and body["result"]["defect_conflicts"] == [],
+        body,
+    )
+
+    # --- 混合形状布局刷新后类型与裁决一致 ---
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"x": 300, "y": 300, "w": 100, "h": 80, "label": "RECT-1"},
+                {
+                    "shape": "circle",
+                    "x": 630,
+                    "y": 381,
+                    "w": 40,
+                    "h": 40,
+                    "label": "CIRC-1",
+                },
+            ]
+        },
+    )
+    check("混合形状方案提交成功（圆形侵入瑕疵 → 不可裁切）", status == 200, body)
+    check(
+        "响应中两扇窗形状依次为 rect、circle",
+        [w["shape"] for w in body["windows"]] == ["rect", "circle"],
+        body,
+    )
+    status, restored = request("GET", f"{API_URL}/api/layout")
+    check(
+        "刷新后形状、编号与裁决全部一致",
+        status == 200
+        and [w["shape"] for w in restored["windows"]] == ["rect", "circle"]
+        and [w["label"] for w in restored["windows"]] == ["RECT-1", "CIRC-1"]
+        and restored["verdict"] == "不可裁切"
+        and restored["result"] == body["result"],
+        restored,
+    )
+
+    # --- 非法形状与圆形宽高不等：按行字段错误且不写入布局 ---
+    status, before = request("GET", f"{API_URL}/api/layout")
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"shape": "ellipse", "x": 300, "y": 300, "w": 10, "h": 10}]},
+    )
+    check(
+        "非法形状 → 422 且按行返回 shape 字段错误",
+        status == 422 and "shape" in body["field_errors"][0]["fields"],
+        body,
+    )
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"shape": "circle", "x": 300, "y": 300, "w": 40, "h": 41}]},
+    )
+    check(
+        "圆形宽高不等 → 422 且 w/h 两字段都报错",
+        status == 422
+        and set(body["field_errors"][0]["fields"]) == {"w", "h"}
+        and all("相等" in m for m in body["field_errors"][0]["fields"].values()),
+        body,
+    )
+    status, after = request("GET", f"{API_URL}/api/layout")
+    check("非法形状/宽高不等提交整批不落库", after == before, after)
+
+    # shape 显式 null 与缺省一律按矩形读取
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"shape": None, "x": 300, "y": 300, "w": 10, "h": 10},
+                {"x": 500, "y": 300, "w": 10, "h": 10},
+            ]
+        },
+    )
+    check(
+        "shape 为 null/缺省 → 按矩形保存（GET 返回 shape=rect）",
+        status == 200
+        and [w["shape"] for w in body["windows"]] == ["rect", "rect"],
+        body,
+    )
+    # 圆形在 5 毫米步长下直径也须落在刻度上
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"step": 5, "windows": [{"shape": "circle", "x": 302, "y": 302, "w": 41, "h": 41}]},
+    )
+    check("步长 5 下直径偏离刻度 → 422", status == 422, body)
+
+    section("11. 经 web（nginx）反代的端到端接线")
     try:
         with urllib.request.urlopen(f"{WEB_URL}/", timeout=10) as resp:
             html = resp.read().decode()

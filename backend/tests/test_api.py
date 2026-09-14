@@ -401,3 +401,152 @@ def test_explicit_null_step_defaults_to_1mm(client):
     r = client.put("/api/layout", json={"step": None, "windows": [{"x": 300, "y": 300, "w": 10, "h": 10}]})
     assert r.status_code == 200
     assert r.json()["step"] == 1
+
+
+# ---------- 圆形开窗（shape=circle，w==h 为直径） ----------
+
+CIRCLE = {"shape": "circle", "x": 640, "y": 380, "w": 40, "h": 40}
+
+
+def test_circle_tangent_to_defect_is_cuttable_and_persisted_with_shape(client):
+    # 圆底点 (660,420) 外切瑕疵 1 上边线：可裁切
+    r = _put(client, [CIRCLE])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "可裁切"
+    assert body["windows"][0]["shape"] == "circle"
+    assert (body["windows"][0]["w"], body["windows"][0]["h"]) == (40, 40)
+
+    restored = client.get("/api/layout").json()
+    assert restored["windows"][0]["shape"] == "circle"
+    assert restored["verdict"] == "可裁切"
+
+
+def test_circle_intruding_defect_by_one_mm_conflicts(client):
+    # 圆心下移 1mm，侵入瑕疵 1 一毫米：不可裁切
+    r = _put(client, [{**CIRCLE, "y": 381}])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    win_id = body["windows"][0]["id"]
+    assert body["verdict"] == "不可裁切"
+    assert body["result"]["defect_conflicts"] == [
+        {"window_id": win_id, "defect_index": 1}
+    ]
+    assert body["result"]["conflicting_window_ids"] == [win_id]
+
+
+def test_circle_rect_windows_conflict_both_highlighted(client):
+    # 圆右移 1mm 侵入矩形开窗：双方进入冲突列表
+    r = _put(client, [
+        {"shape": "circle", "x": 641, "y": 380, "w": 40, "h": 40},
+        {"shape": "rect", "x": 680, "y": 380, "w": 40, "h": 40},
+    ])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    ids = [w["id"] for w in body["windows"]]
+    assert body["verdict"] == "不可裁切"
+    assert body["result"]["window_conflicts"] == [
+        {"window_a": ids[0], "window_b": ids[1]}
+    ]
+    assert body["result"]["conflicting_window_ids"] == sorted(ids)
+
+
+def test_two_circles_external_tangency_accepted(client):
+    # 两圆心距恰好等于半径和（外切）：可裁切；靠近 1mm 即冲突
+    r = _put(client, [
+        {"shape": "circle", "x": 290, "y": 280, "w": 40, "h": 40},
+        {"shape": "circle", "x": 330, "y": 280, "w": 40, "h": 40},
+    ])
+    assert r.status_code == 200, r.text
+    assert r.json()["verdict"] == "可裁切"
+
+    r = _put(client, [
+        {"shape": "circle", "x": 290, "y": 280, "w": 40, "h": 40},
+        {"shape": "circle", "x": 329, "y": 280, "w": 40, "h": 40},
+    ])
+    assert r.json()["verdict"] == "不可裁切"
+
+
+def test_mixed_shape_layout_roundtrip_keeps_shape_and_verdict(client):
+    # 混合形状：圆形侵入瑕疵 1，矩形干净 → 不可裁切，刷新后形状与裁决一致
+    r = _put(client, [
+        {"shape": "rect", "x": 300, "y": 300, "w": 40, "h": 40, "label": "RECT-1"},
+        {"shape": "circle", "x": 640, "y": 381, "w": 40, "h": 40, "label": "CIRC-1"},
+    ])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [w["shape"] for w in body["windows"]] == ["rect", "circle"]
+    circle_id = body["windows"][1]["id"]
+    assert body["verdict"] == "不可裁切"
+    assert body["result"]["conflicting_window_ids"] == [circle_id]
+
+    restored = client.get("/api/layout").json()
+    assert [w["shape"] for w in restored["windows"]] == ["rect", "circle"]
+    assert [w["label"] for w in restored["windows"]] == ["RECT-1", "CIRC-1"]
+    assert restored["verdict"] == "不可裁切"
+    assert restored["result"] == body["result"]
+
+
+def test_circle_with_unequal_width_height_rejected_per_row(client):
+    before = client.get("/api/layout").json()
+    r = _put(client, [{"shape": "circle", "x": 300, "y": 300, "w": 40, "h": 41}])
+    assert r.status_code == 422
+    fields = r.json()["field_errors"][0]["fields"]
+    assert set(fields) == {"w", "h"}
+    assert all("相等" in msg for msg in fields.values())
+    # 整次不落库
+    assert client.get("/api/layout").json() == before
+
+
+def test_invalid_shape_value_rejected_per_row_and_nothing_persisted(client):
+    before = client.get("/api/layout").json()
+    for bad in ("ellipse", "CIRCLE", 3, True, ["circle"]):
+        r = _put(client, [{"shape": bad, "x": 300, "y": 300, "w": 10, "h": 10}])
+        assert r.status_code == 422, bad
+        assert "shape" in r.json()["field_errors"][0]["fields"], bad
+    assert client.get("/api/layout").json() == before
+
+
+def test_shape_null_and_missing_read_as_rect(client):
+    # 显式 null 与旧客户端缺省都按矩形处理
+    r = _put(client, [
+        {"shape": None, "x": 300, "y": 300, "w": 10, "h": 10},
+        {"x": 500, "y": 300, "w": 10, "h": 10},
+    ])
+    assert r.status_code == 200, r.text
+    assert [w["shape"] for w in r.json()["windows"]] == ["rect", "rect"]
+
+
+def test_explicit_rect_shape_accepted(client):
+    r = _put(client, [{"shape": "rect", "x": 300, "y": 300, "w": 10, "h": 10}])
+    assert r.status_code == 200
+    assert r.json()["windows"][0]["shape"] == "rect"
+
+
+def test_circle_off_grid_rejected_per_row(client):
+    # 圆形直径同样要落在步长刻度上
+    r = client.put("/api/layout", json={
+        "step": 5,
+        "windows": [{"shape": "circle", "x": 302, "y": 302, "w": 41, "h": 41}],
+    })
+    assert r.status_code == 422
+    fields = r.json()["field_errors"][0]["fields"]
+    assert set(fields) == {"w", "h"}
+
+
+def test_circle_on_grid_saved_with_step(client):
+    r = client.put("/api/layout", json={
+        "step": 5,
+        "windows": [{"shape": "circle", "x": 302, "y": 302, "w": 105, "h": 105}],
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["step"] == 5
+    assert body["windows"][0]["shape"] == "circle"
+
+
+def test_bad_shape_and_coordinate_errors_reported_together(client):
+    # 非法形状与坐标错误同时报出（坐标仍按矩形规则校验）
+    r = _put(client, [{"shape": "oval", "x": 0, "y": 300, "w": 10, "h": 10}])
+    assert r.status_code == 422
+    assert set(r.json()["field_errors"][0]["fields"]) == {"shape", "x"}

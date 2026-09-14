@@ -95,6 +95,23 @@ def test_migration_adds_nullable_step_column(tmp_path):
     assert row == (1, None)
 
 
+def test_migration_adds_nullable_shape_column(tmp_path):
+    engine = _make_old_db(tmp_path / "old.db")
+
+    # 模拟服务启动：create_all 不会动已存在的旧表，迁移负责补列
+    Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
+
+    columns = {c["name"]: c for c in inspect(engine).get_columns("windows")}
+    assert "shape" in columns
+    assert columns["shape"]["nullable"] is True
+
+    # 旧记录缺少形状值（NULL），读取时按矩形处理
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT id, shape FROM windows WHERE id = 1")).one()
+    assert row == (1, None)
+
+
 def test_migration_is_idempotent_and_preserves_rows(tmp_path):
     engine = _make_old_db(tmp_path / "old.db")
     Base.metadata.create_all(bind=engine)
@@ -143,3 +160,5 @@ def test_old_layout_without_step_loads_as_1mm(tmp_path):
     assert data["verdict"] == "可裁切"
     assert [(w["x"], w["y"], w["w"], w["h"]) for w in data["windows"]] == [(300, 300, 100, 80)]
     assert data["windows"][0]["label"] is None
+    # 旧记录缺少形状值：按矩形读取
+    assert data["windows"][0]["shape"] == "rect"

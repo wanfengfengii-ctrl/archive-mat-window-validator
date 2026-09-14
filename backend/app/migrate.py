@@ -12,6 +12,7 @@ from sqlalchemy import inspect, text
 _PATCHES: tuple[tuple[str, str, str], ...] = (
     ("windows", "label", "ALTER TABLE windows ADD COLUMN label VARCHAR(24)"),
     ("layouts", "step", "ALTER TABLE layouts ADD COLUMN step INTEGER"),
+    ("windows", "shape", "ALTER TABLE windows ADD COLUMN shape VARCHAR(8)"),
 )
 
 

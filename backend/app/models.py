@@ -41,6 +41,9 @@ class Window(Base):
     )
     # 该开窗在本次提交中的次序，用于刷新后还原同一布局
     position = Column(Integer, nullable=False)
+    # 开窗形状："rect"（矩形）| "circle"（圆形，w==h 为直径）；
+    # 可空——旧记录缺少该值，读取时一律按矩形处理
+    shape = Column(String(8), nullable=True)
     x = Column(Integer, nullable=False)
     y = Column(Integer, nullable=False)
     w = Column(Integer, nullable=False)

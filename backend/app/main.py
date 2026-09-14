@@ -10,7 +10,7 @@ from . import engine as eng
 from .db import Base, engine as db_engine, get_db
 from .migrate import run_migrations
 from .models import Layout, Window
-from .validation import normalize_label, parse_step, validate_payload
+from .validation import normalize_label, normalize_shape, parse_step, validate_payload
 
 
 @asynccontextmanager
@@ -54,6 +54,8 @@ def _serialize(layout: Layout) -> dict:
     windows = [
         {
             "id": w.id,
+            # 旧记录缺少形状值：按矩形读取
+            "shape": w.shape if w.shape is not None else eng.SHAPE_RECT,
             "x": w.x,
             "y": w.y,
             "w": w.w,
@@ -115,7 +117,14 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
     items = body["windows"]
     # 以提交次序为临时 id 进行裁决（落库后由数据库生成稳定 id）
     staged = [
-        {"id": i, "x": it["x"], "y": it["y"], "w": it["w"], "h": it["h"]}
+        {
+            "id": i,
+            "shape": normalize_shape(it.get("shape")),
+            "x": it["x"],
+            "y": it["y"],
+            "w": it["w"],
+            "h": it["h"],
+        }
         for i, it in enumerate(items)
     ]
     verdict_data = eng.adjudicate(staged)
@@ -127,6 +136,7 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
         layout.windows.append(
             Window(
                 position=position,
+                shape=normalize_shape(it.get("shape")),
                 x=it["x"],
                 y=it["y"],
                 w=it["w"],
@@ -138,7 +148,15 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
     db.flush()  # 拿到 layout.id 与各 window.id
 
     persisted = [
-        {"id": w.id, "x": w.x, "y": w.y, "w": w.w, "h": w.h} for w in layout.windows
+        {
+            "id": w.id,
+            "shape": w.shape if w.shape is not None else eng.SHAPE_RECT,
+            "x": w.x,
+            "y": w.y,
+            "w": w.w,
+            "h": w.h,
+        }
+        for w in layout.windows
     ]
     layout.result = eng.adjudicate(persisted)
     layout.verdict = layout.result["verdict"]

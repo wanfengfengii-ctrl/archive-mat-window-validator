@@ -32,6 +32,8 @@ export async function submitLayout(windows, step) {
     windows: windows.map((w) => {
       const label = (w.label ?? "").trim();
       return {
+        // 矩形（旧客户端的缺省形状）不发送 shape；圆形显式带上 circle
+        ...(w.shape === "circle" ? { shape: "circle" } : {}),
         x: w.x,
         y: w.y,
         w: w.w,

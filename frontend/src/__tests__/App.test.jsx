@@ -288,7 +288,7 @@ describe("提交与逐字段错误", () => {
       expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
     );
     expect(submitLayout).toHaveBeenCalledWith([
-      { id: expect.any(String), x: 300, y: 300, w: 100, h: 60, label: "" },
+      { id: expect.any(String), shape: "rect", x: 300, y: 300, w: 100, h: 60, label: "" },
     ], 1);
   });
 
@@ -369,7 +369,7 @@ describe("工件编号", () => {
       expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
     );
     expect(submitLayout).toHaveBeenCalledWith([
-      { id: expect.any(String), x: 300, y: 300, w: 100, h: 60, label: "ZW-001" },
+      { id: expect.any(String), shape: "rect", x: 300, y: 300, w: 100, h: 60, label: "ZW-001" },
     ], 1);
     // 保存后编号仍在列表中
     expect(screen.getByText(/ZW-001 \(300, 300\) 100×60/)).toBeInTheDocument();
@@ -460,8 +460,8 @@ describe("工件编号", () => {
       expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
     );
     expect(submitLayout).toHaveBeenLastCalledWith([
-      { id: expect.any(String), x: 300, y: 300, w: 60, h: 60, label: "DUP-1" },
-      { id: expect.any(String), x: 330, y: 330, w: 60, h: 60, label: "ZW-002" },
+      { id: expect.any(String), shape: "rect", x: 300, y: 300, w: 60, h: 60, label: "DUP-1" },
+      { id: expect.any(String), shape: "rect", x: 330, y: 330, w: 60, h: 60, label: "ZW-002" },
     ], 1);
   });
 
@@ -614,7 +614,7 @@ describe("定位步长", () => {
       expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
     );
     expect(submitLayout).toHaveBeenCalledWith([
-      { id: expect.any(String), x: 302, y: 302, w: 105, h: 60, label: "" },
+      { id: expect.any(String), shape: "rect", x: 302, y: 302, w: 105, h: 60, label: "" },
     ], 5);
     // 保存后步长选择保持 5 毫米
     expect(screen.getByRole("radio", { name: "5 毫米" })).toBeChecked();
@@ -727,7 +727,241 @@ describe("定位步长", () => {
       expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
     );
     expect(submitLayout).toHaveBeenLastCalledWith([
-      { id: expect.any(String), x: 302, y: 302, w: 100, h: 60, label: "" },
+      { id: expect.any(String), shape: "rect", x: 302, y: 302, w: 100, h: 60, label: "" },
     ], 5);
+  });
+});
+
+describe("圆形观察窗", () => {
+  it("默认矩形窗，可切换为圆形窗工具", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    expect(screen.getByRole("radio", { name: "矩形窗" })).toBeChecked();
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    expect(screen.getByRole("radio", { name: "圆形窗" })).toBeChecked();
+    // 切换工具形状也算未保存改动（但没有开窗时无法提交）
+    expect(screen.getByTestId("submit-btn")).toBeDisabled();
+  });
+
+  it("矩形切换圆形：以宽高较小值为直径并按步长吸附为确定尺寸", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    fireEvent.click(screen.getByRole("radio", { name: "5 毫米" }));
+    const svg = document.querySelector(".sheet");
+    // 拖出矩形 (307,312) 115×65
+    dragDraw(svg, 306, 311, 419, 375);
+    await screen.findByText(/#1 \(307, 312\) 115×65/);
+    expect(document.querySelectorAll("rect.window").length).toBe(1);
+
+    // 选中该窗后切换圆形：直径 = min(115,65)=65（已在刻度上）
+    fireEvent.click(screen.getByText(/#1 \(307, 312\) 115×65/));
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+
+    // 列表显示直径，画布绘制真实圆轮廓
+    await screen.findByText(/#1 \(307, 312\) Ø65/);
+    expect(document.querySelector("circle.window")).not.toBeNull();
+    expect(document.querySelectorAll("rect.window").length).toBe(0);
+    // 表单改用直径输入，不再有独立的宽/高输入
+    expect(screen.getByLabelText("直径（毫米）")).toHaveValue("65");
+    expect(screen.queryByLabelText("宽（毫米）")).toBeNull();
+    expect(screen.queryByLabelText("高（毫米）")).toBeNull();
+    // 圆形窗与两个瑕疵都不相交 → 预览仍可裁切
+    expect(screen.getByTestId("verdict-banner")).toHaveAttribute("data-verdict", "可裁切");
+  });
+
+  it("只切换选中窗：其余矩形窗的位置与形状保持原样", async () => {
+    render(<App />);
+    const svg = document.querySelector(".sheet");
+    dragDraw(svg, 300, 300, 360, 360); // 矩形 60×60
+    dragDraw(svg, 500, 500, 540, 530); // 矩形 40×30
+    await screen.findByText(/#2 \(500, 500\) 40×30/);
+
+    fireEvent.click(screen.getByText(/#1 \(300, 300\) 60×60/));
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+
+    await screen.findByText(/#1 \(300, 300\) Ø60/);
+    // 第二扇窗仍是矩形，坐标尺寸不变
+    expect(screen.getByText(/#2 \(500, 500\) 40×30/)).toBeInTheDocument();
+    expect(document.querySelectorAll("rect.window").length).toBe(1);
+    expect(document.querySelectorAll("circle.window").length).toBe(1);
+  });
+
+  it("圆形工具下直接拖放：以宽高较小值为直径，宽高相等", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    fireEvent.click(screen.getByRole("radio", { name: "5 毫米" }));
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    const svg = document.querySelector(".sheet");
+    // 拖出 113×64 的外接框：直径取 64 吸附为 65，位置 (307,312)
+    dragDraw(svg, 306, 311, 419, 375);
+    await screen.findByText(/#1 \(307, 312\) Ø65/);
+    expect(document.querySelector("circle.window")).not.toBeNull();
+  });
+
+  it("圆与瑕疵外切：即时裁决可裁切，提交后保存", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    const svg = document.querySelector(".sheet");
+    // 圆心 (660,400) r=20：圆底点 (660,420) 外切瑕疵 1 上边线
+    dragDraw(svg, 640, 380, 680, 420);
+    await screen.findByText(/#1 \(640, 380\) Ø40/);
+    expect(screen.getByTestId("verdict-banner")).toHaveAttribute("data-verdict", "可裁切");
+    expect(document.querySelector(".window-conflict")).toBeNull();
+    expect(document.querySelector(".defect-hit")).toBeNull();
+
+    vi.mocked(submitLayout).mockResolvedValue({
+      ok: true,
+      data: {
+        verdict: "可裁切",
+        windows: [{ id: 51, position: 0, shape: "circle", x: 640, y: 380, w: 40, h: 40, label: null }],
+        result: { verdict: "可裁切", ...cleanResult },
+        created_at: "2026-09-14T00:00:00Z",
+      },
+    });
+    fireEvent.click(screen.getByTestId("submit-btn"));
+    await waitFor(() =>
+      expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
+    );
+    // 圆形开窗以 shape=circle 提交
+    expect(submitLayout).toHaveBeenCalledWith(
+      [{ id: expect.any(String), shape: "circle", x: 640, y: 380, w: 40, h: 40, label: "" }],
+      1
+    );
+  });
+
+  it("圆与矩形开窗侵入 1 毫米：双方高亮且不可裁切", async () => {
+    render(<App />);
+    const svg = document.querySelector(".sheet");
+    // 矩形 [680,720)×[380,420)：与瑕疵 1 仅角点 (680,420) 相接
+    dragDraw(svg, 680, 380, 720, 420);
+    await screen.findByText(/#1 \(680, 380\) 40×40/);
+    // 切到圆形工具（无选中窗）
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    // 圆心 (661,400) r=20：圆最右点 681 侵入矩形 1 毫米；
+    // 圆底点到瑕疵 1 上边线距离恰为 20（外切），不产生瑕疵冲突
+    dragDraw(svg, 641, 380, 681, 420);
+    await screen.findByText(/#2 \(641, 380\) Ø40/);
+
+    expect(screen.getByTestId("verdict-banner")).toHaveAttribute("data-verdict", "不可裁切");
+    expect(document.querySelectorAll(".window-conflict").length).toBe(2);
+    // 瑕疵未被命中（唯一冲突来自两扇窗）
+    expect(document.querySelector(".defect-hit")).toBeNull();
+    expect(screen.getByTestId("conflict-list").textContent).toContain("相互重叠");
+  });
+
+  it("圆形表单用直径编辑：修改直径后宽高同时吸附更新", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    fireEvent.click(screen.getByRole("radio", { name: "5 毫米" }));
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    const svg = document.querySelector(".sheet");
+    dragDraw(svg, 302, 302, 342, 342);
+    await screen.findByText(/#1 \(302, 302\) Ø40/);
+    fireEvent.click(screen.getByText(/#1 \(302, 302\) Ø40/));
+
+    const dInput = screen.getByLabelText("直径（毫米）");
+    fireEvent.change(dInput, { target: { value: "62" } });
+    fireEvent.blur(dInput);
+    // 62 吸附到最近 5 毫米刻度 60
+    await screen.findByText(/#1 \(302, 302\) Ø60/);
+  });
+
+  it("宽高不等的圆形被 422 打回：直径字段报错、草稿保留，修正后可重试", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    fireEvent.click(screen.getByRole("radio", { name: "圆形窗" }));
+    const svg = document.querySelector(".sheet");
+    dragDraw(svg, 300, 300, 340, 340);
+    await screen.findByText(/#1 \(300, 300\) Ø40/);
+    // 选中该窗后提交，服务器按行打回直径字段错误
+    fireEvent.click(screen.getByText(/#1 \(300, 300\) Ø40/));
+
+    vi.mocked(submitLayout).mockResolvedValue({
+      ok: false,
+      status: 422,
+      detail: "存在非法开窗，本次提交未保存",
+      fieldErrors: [
+        { index: 0, fields: { w: "圆形开窗宽高必须相等（直径）", h: "圆形开窗宽高必须相等（直径）" } },
+      ],
+    });
+    fireEvent.click(screen.getByTestId("submit-btn"));
+
+    // 直径字段（w/h 合并）显示错误且不重复
+    const form = await screen.findByTestId("window-form");
+    const msgs = within(form).getAllByText(/宽高必须相等/);
+    expect(msgs.length).toBe(1);
+    // 草稿与圆形画布保留，可修正后重试
+    expect(screen.getByText(/#1 \(300, 300\) Ø40/)).toBeInTheDocument();
+    expect(document.querySelector("circle.window")).not.toBeNull();
+
+    vi.mocked(submitLayout).mockResolvedValue({
+      ok: true,
+      data: {
+        verdict: "可裁切",
+        windows: [{ id: 61, position: 0, shape: "circle", x: 300, y: 300, w: 40, h: 40, label: null }],
+        result: { verdict: "可裁切", ...cleanResult },
+        created_at: "2026-09-14T00:00:00Z",
+      },
+    });
+    fireEvent.click(screen.getByTestId("submit-btn"));
+    await waitFor(() =>
+      expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存")
+    );
+  });
+});
+
+describe("混合形状布局的刷新恢复", () => {
+  it("刷新后圆形画为真实圆轮廓、形状与裁决一致", async () => {
+    vi.mocked(fetchLayout).mockResolvedValue({
+      verdict: "不可裁切",
+      step: 1,
+      windows: [
+        { id: 71, position: 0, shape: "rect", x: 300, y: 300, w: 40, h: 40, label: "RECT-1" },
+        { id: 72, position: 1, shape: "circle", x: 640, y: 381, w: 40, h: 40, label: "CIRC-1" },
+      ],
+      result: {
+        verdict: "不可裁切",
+        defect_conflicts: [{ window_id: 72, defect_index: 1 }],
+        window_conflicts: [],
+        conflicting_window_ids: [72],
+      },
+      created_at: "2026-09-14T00:00:00Z",
+    });
+    render(<App />);
+
+    await screen.findByText(/RECT-1 \(300, 300\) 40×40/);
+    await screen.findByText(/CIRC-1 \(640, 381\) Ø40/);
+    // 一个矩形轮廓、一个真实圆轮廓
+    expect(document.querySelectorAll("rect.window").length).toBe(1);
+    const circle = document.querySelector("circle.window");
+    expect(circle).not.toBeNull();
+    expect(Number(circle.getAttribute("r"))).toBe(20);
+    // 已保存裁决：只有圆形窗冲突高亮，瑕疵 1 高亮
+    expect(screen.getByTestId("verdict-banner")).toHaveAttribute("data-verdict", "不可裁切");
+    expect(screen.getByTestId("verdict-banner").textContent).toContain("已保存");
+    expect(document.querySelectorAll(".window-conflict").length).toBe(1);
+    expect(document.querySelectorAll(".defect-hit").length).toBe(1);
+
+    // 选中圆形窗：表单为直径输入；选中矩形窗：恢复宽高输入
+    fireEvent.click(screen.getByText(/CIRC-1 \(640, 381\) Ø40/));
+    expect(screen.getByLabelText("直径（毫米）")).toHaveValue("40");
+    fireEvent.click(screen.getByText(/RECT-1 \(300, 300\) 40×40/));
+    expect(screen.getByLabelText("宽（毫米）")).toHaveValue("40");
+    expect(screen.getByLabelText("高（毫米）")).toHaveValue("40");
+  });
+
+  it("旧记录缺少形状字段时按矩形读取", async () => {
+    vi.mocked(fetchLayout).mockResolvedValue({
+      verdict: "可裁切",
+      windows: [{ id: 81, position: 0, x: 300, y: 300, w: 100, h: 80, label: null }],
+      result: { verdict: "可裁切", ...cleanResult },
+      created_at: "2026-09-01T00:00:00Z",
+    });
+    render(<App />);
+    await screen.findByText(/#1 \(300, 300\) 100×80/);
+    expect(document.querySelectorAll("rect.window").length).toBe(1);
+    expect(document.querySelector("circle.window")).toBeNull();
+    expect(screen.getByRole("radio", { name: "矩形窗" })).toBeChecked();
   });
 });

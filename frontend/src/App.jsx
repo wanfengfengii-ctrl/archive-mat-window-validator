@@ -11,11 +11,14 @@ import {
   MARGIN,
   SHEET_HEIGHT,
   SHEET_WIDTH,
+  SHAPE_CIRCLE,
+  SHAPE_RECT,
   VERDICT_CUTTABLE,
   VERDICT_REJECTED,
   adjudicate,
   clampIntoInner,
   fieldErrors,
+  snapCircle,
   snapRect,
   windowName,
 } from "./geometry.js";
@@ -29,12 +32,27 @@ function clientToMm(svg, event) {
   return { x: pt.x, y: pt.y };
 }
 
-// 把拖拽中的开窗左上角限制在安全区内（整窗不得越界）
+// 圆形外接框左上角：两个方向都要容得下直径
+function clampCircleTopLeft(x, y, d) {
+  return [
+    Math.min(Math.max(Math.round(x), MARGIN), INNER_RIGHT - d),
+    Math.min(Math.max(Math.round(y), MARGIN), INNER_BOTTOM - d),
+  ];
+}
+
+// 把拖拽中的矩形开窗左上角限制在安全区内（整窗不得越界）
 function clampTopLeft(x, y, w, h) {
   return [
     Math.min(Math.max(Math.round(x), MARGIN), INNER_RIGHT - w),
     Math.min(Math.max(Math.round(y), MARGIN), INNER_BOTTOM - h),
   ];
+}
+
+// 按形状把拖出的原始矩形/圆外接框吸附到当前步长刻度
+function snapShape(x, y, w, h, step, shape) {
+  return shape === SHAPE_CIRCLE
+    ? snapCircle(x, y, Math.min(w, h), step)
+    : snapRect(x, y, w, h, step);
 }
 
 export default function App() {
@@ -44,6 +62,7 @@ export default function App() {
   const [windows, setWindows] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [draftRect, setDraftRect] = useState(null); // 正在拖放的新开窗
+  const [shape, setShape] = useState(SHAPE_RECT); // 当前观察窗形状（矩形/圆形）
   const [step, setStep] = useState(DEFAULT_STEP); // 定位步长（毫米）
   const [saved, setSaved] = useState(null); // 最近一次服务器裁决
   const [dirty, setDirty] = useState(false);
@@ -63,8 +82,22 @@ export default function App() {
           setWindows(
             [...layout.windows]
               .sort((a, b) => a.position - b.position)
-              .map(({ id, x, y, w, h, label }) => ({ id, x, y, w, h, label: label ?? "" }))
+              .map(({ id, shape: savedShape, x, y, w, h, label }) => ({
+                id,
+                // 旧记录缺少类型时按矩形读取
+                shape: savedShape ?? SHAPE_RECT,
+                x,
+                y,
+                w,
+                h,
+                label: label ?? "",
+              }))
           );
+          // 观察窗形状选择跟随布局：全部为圆时停在圆形，否则回到矩形
+          const ordered = [...layout.windows].sort((a, b) => a.position - b.position);
+          if (ordered.length > 0 && ordered.every((w) => (w.shape ?? SHAPE_RECT) === SHAPE_CIRCLE)) {
+            setShape(SHAPE_CIRCLE);
+          }
           setSaved({ verdict: layout.verdict, result: layout.result });
         }
       })
@@ -78,12 +111,17 @@ export default function App() {
   // 本地即时预览裁决（提交以后端结果为准）
   const verdictData = useMemo(() => adjudicate(windows), [windows]);
 
-  // 本地字段非法（越过安全区、偏离所选步长刻度等）时也不能给出“可裁切”
+  // 本地字段非法（越过安全区、偏离所选步长刻度、圆形宽高不等等）
+  // 时也不能给出“可裁切”
   const localInvalidIds = useMemo(
     () =>
       new Set(
         windows
-          .filter((win) => Object.keys(fieldErrors(win.x, win.y, win.w, win.h, step)).length > 0)
+          .filter(
+            (win) =>
+              Object.keys(fieldErrors(win.x, win.y, win.w, win.h, step, win.shape ?? SHAPE_RECT))
+                .length > 0
+          )
           .map((w) => w.id)
       ),
     [windows, step]
@@ -149,11 +187,43 @@ export default function App() {
     markDirty();
   }
 
+  // 切换当前观察窗形状（矩形↔圆形）：
+  // 选中某扇窗时就地切换该窗——转圆形时以当前宽高中较小值作为直径
+  // 并按所选步长吸附，其余矩形窗的操作与结论保持原样；
+  // 没有选中窗时只改变其后新拖放窗的形状。
+  function changeShape(nextShape) {
+    if (nextShape === shape) return;
+    const target = windows.find((w) => w.id === selectedId);
+    if (target) {
+      setWindows((list) =>
+        list.map((w) => {
+          if (w.id !== target.id) return w;
+          if (nextShape === SHAPE_CIRCLE) {
+            const snapped = snapCircle(w.x, w.y, Math.min(w.w, w.h), step);
+            return { ...w, shape: SHAPE_CIRCLE, ...snapped };
+          }
+          // 圆形回矩形：外接框即原直径的正方形，位置与裁决仍在同一画布即时重算
+          return { ...w, shape: SHAPE_RECT };
+        })
+      );
+    }
+    setShape(nextShape);
+    markDirty();
+  }
+
+  // 选中圆形开窗时把当前工具形状同步为圆形，切回矩形窗则同步为矩形，
+  // 保证表单字段（宽高 / 直径）与正在编辑的窗一致
+  useEffect(() => {
+    const selected = windows.find((w) => w.id === selectedId);
+    if (selected) setShape(selected.shape ?? SHAPE_RECT);
+  }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function updateWindow(id, patch) {
     setWindows((list) =>
       list.map((w) => {
         if (w.id !== id) return w;
         const next = { ...w, ...patch };
+        const winShape = next.shape ?? SHAPE_RECT;
         // 几何字段的表单编辑按当前步长即时吸附（编号等文本字段除外）
         if (
           patch.x !== undefined ||
@@ -161,7 +231,11 @@ export default function App() {
           patch.w !== undefined ||
           patch.h !== undefined
         ) {
-          Object.assign(next, snapRect(next.x, next.y, next.w, next.h, step));
+          const snapped =
+            winShape === SHAPE_CIRCLE
+              ? snapCircle(next.x, next.y, Math.min(next.w, next.h), step)
+              : snapRect(next.x, next.y, next.w, next.h, step);
+          Object.assign(next, snapped);
         }
         return next;
       })
@@ -171,21 +245,27 @@ export default function App() {
 
   function moveWindow(id, x, y) {
     setWindows((list) =>
-      list.map((w) =>
-        w.id === id
-          ? (() => {
-              const [cx, cy] = clampTopLeft(x, y, w.w, w.h);
-              const snapped = snapRect(cx, cy, w.w, w.h, step);
-              return { ...w, x: snapped.x, y: snapped.y, w: snapped.w, h: snapped.h };
-            })()
-          : w
-      )
+      list.map((w) => {
+        if (w.id !== id) return w;
+        const winShape = w.shape ?? SHAPE_RECT;
+        if (winShape === SHAPE_CIRCLE) {
+          const [cx, cy] = clampCircleTopLeft(x, y, w.w);
+          const snapped = snapCircle(cx, cy, w.w, step);
+          return { ...w, x: snapped.x, y: snapped.y, w: snapped.w, h: snapped.h };
+        }
+        const [cx, cy] = clampTopLeft(x, y, w.w, w.h);
+        const snapped = snapRect(cx, cy, w.w, w.h, step);
+        return { ...w, x: snapped.x, y: snapped.y, w: snapped.w, h: snapped.h };
+      })
     );
     markDirty();
   }
 
   function addWindow(rect) {
-    setWindows((list) => [...list, { id: nextTmpId(), label: "", ...rect }]);
+    setWindows((list) => [
+      ...list,
+      { id: nextTmpId(), shape, label: "", ...rect },
+    ]);
     setSelectedId(null);
     markDirty();
   }
@@ -218,8 +298,12 @@ export default function App() {
         w: Math.abs(ex - sx),
         h: Math.abs(ey - sy),
       };
-      // 草稿即时按当前步长吸附，松手落窗的坐标与之一致
-      setDraftRect(snapRect(current.x, current.y, current.w, current.h, step));
+      // 草稿即时按当前步长吸附，松手落窗的坐标与之一致；
+      // 圆形以拖出宽高的较小值作为直径
+      setDraftRect({
+        shape,
+        ...snapShape(current.x, current.y, current.w, current.h, step, shape),
+      });
     }
     function stop() {
       window.removeEventListener("pointermove", onMove);
@@ -230,7 +314,7 @@ export default function App() {
       stop();
       setDraftRect(null);
       if (current && current.w >= 1 && current.h >= 1) {
-        addWindow(snapRect(current.x, current.y, current.w, current.h, step));
+        addWindow(snapShape(current.x, current.y, current.w, current.h, step, shape));
       }
     }
     // 设备（触屏/手写笔/系统手势）触发指针取消：立即终止拖放并清除草稿，不新增开窗
@@ -251,7 +335,15 @@ export default function App() {
       setWindows(
         [...data.windows]
           .sort((a, b) => a.position - b.position)
-          .map(({ id, x, y, w, h, label }) => ({ id, x, y, w, h, label: label ?? "" }))
+          .map(({ id, shape: savedShape, x, y, w, h, label }) => ({
+            id,
+            shape: savedShape ?? SHAPE_RECT,
+            x,
+            y,
+            w,
+            h,
+            label: label ?? "",
+          }))
       );
       if (data.step != null) setStep(data.step);
       setSaved({ verdict: data.verdict, result: data.result });
@@ -274,8 +366,8 @@ export default function App() {
       <header className="app-header">
         <h1>档案装裱排版校验台</h1>
         <p className="subtitle">
-          纸张 {SHEET_WIDTH}×{SHEET_HEIGHT} 毫米 · 左上原点 · 半开矩形 ·
-          压边安全区 {MARGIN} 毫米
+          纸张 {SHEET_WIDTH}×{SHEET_HEIGHT} 毫米 · 左上原点 · 矩形半开、圆形按正面积相交
+          （边线相接与外切允许） · 压边安全区 {MARGIN} 毫米
         </p>
       </header>
 
@@ -309,28 +401,56 @@ export default function App() {
 
       <main className="layout">
         <section className="canvas-wrap">
-          <div
-            className="step-picker"
-            data-testid="step-picker"
-            role="radiogroup"
-            aria-label="定位步长"
-          >
-            <span className="step-picker-label">定位步长</span>
-            {GRID_STEPS.map((s) => (
-              <label
-                key={s}
-                className={step === s ? "step-option step-option-active" : "step-option"}
-              >
-                <input
-                  type="radio"
-                  name="step"
-                  value={s}
-                  checked={step === s}
-                  onChange={() => changeStep(s)}
-                />
-                {s} 毫米
-              </label>
-            ))}
+          <div className="pickers">
+            <div
+              className="step-picker"
+              data-testid="shape-picker"
+              role="radiogroup"
+              aria-label="观察窗形状"
+            >
+              <span className="step-picker-label">观察窗</span>
+              {[
+                { value: SHAPE_RECT, text: "矩形窗" },
+                { value: SHAPE_CIRCLE, text: "圆形窗" },
+              ].map(({ value, text }) => (
+                <label
+                  key={value}
+                  className={shape === value ? "step-option step-option-active" : "step-option"}
+                >
+                  <input
+                    type="radio"
+                    name="shape"
+                    value={value}
+                    checked={shape === value}
+                    onChange={() => changeShape(value)}
+                  />
+                  {text}
+                </label>
+              ))}
+            </div>
+            <div
+              className="step-picker"
+              data-testid="step-picker"
+              role="radiogroup"
+              aria-label="定位步长"
+            >
+              <span className="step-picker-label">定位步长</span>
+              {GRID_STEPS.map((s) => (
+                <label
+                  key={s}
+                  className={step === s ? "step-option step-option-active" : "step-option"}
+                >
+                  <input
+                    type="radio"
+                    name="step"
+                    value={s}
+                    checked={step === s}
+                    onChange={() => changeStep(s)}
+                  />
+                  {s} 毫米
+                </label>
+              ))}
+            </div>
           </div>
           <SheetCanvas
             defects={defects}
@@ -342,7 +462,10 @@ export default function App() {
             onMove={moveWindow}
             onDrawStart={handleDrawStart}
           />
-          <p className="hint">在纸面空白处按住拖放可新开窗；拖动开窗可移动（坐标按所选步长吸附并限制在安全区内）。</p>
+          <p className="hint">
+            在纸面空白处按住拖放可新开{shape === SHAPE_CIRCLE ? "圆" : "矩"}窗（以宽高较小值为直径并按步长吸附）；
+            拖动开窗可移动（坐标按所选步长吸附并限制在安全区内）。
+          </p>
         </section>
 
         <aside className="panel">
@@ -356,9 +479,18 @@ export default function App() {
           <h2>开窗列表（{windows.length}）</h2>
           <ul className="window-list">
             {windows.map((w, i) => {
-              const errs = fieldErrors(w.x, w.y, w.w, w.h, step);
+              const winShape = w.shape ?? SHAPE_RECT;
+              const errs = fieldErrors(w.x, w.y, w.w, w.h, step, winShape);
               const serverErrs = rowErrorMap.get(w.id);
               const bad = conflictingIds.has(w.id) || localInvalidIds.has(w.id);
+              const sizeText =
+                winShape === SHAPE_CIRCLE ? `Ø${w.w}` : `${w.w}×${w.h}`;
+              const fieldLabel = (k) => {
+                if (k === "label") return "编号";
+                if (k === "shape") return "形状";
+                if (winShape === SHAPE_CIRCLE && (k === "w" || k === "h")) return "直径";
+                return k;
+              };
               return (
                 <li
                   key={w.id}
@@ -370,11 +502,11 @@ export default function App() {
                     className="row-select"
                     onClick={() => setSelectedId(w.id)}
                   >
-                    {windowName(w, i)} ({w.x}, {w.y}) {w.w}×{w.h}
+                    {windowName(w, i)} ({w.x}, {w.y}) {sizeText}
                   </button>
                   {Object.entries({ ...errs, ...(serverErrs ?? {}) }).map(([k, v]) => (
                     <small key={k} className="error-text">
-                      {k === "label" ? "编号" : k}: {v}
+                      {fieldLabel(k)}: {v}
                     </small>
                   ))}
                 </li>
