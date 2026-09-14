@@ -20,6 +20,16 @@ export const DEFECTS = [
 export const VERDICT_CUTTABLE = "可裁切";
 export const VERDICT_REJECTED = "不可裁切";
 
+// 工件编号（可选）：去首尾空格后最长 24 字符，同一布局内唯一（后端为准）
+export const MAX_LABEL_LENGTH = 24;
+
+// 开窗展示名：填了工件编号用编号（去首尾空格），未填写退回顺序号 #1、#2…
+// 画布、列表、冲突说明统一使用，保证技师按编号定位每一扇窗。
+export function windowName(win, index) {
+  const label = (win?.label ?? "").trim();
+  return label === "" ? `#${index + 1}` : label;
+}
+
 export function isInt(v) {
   return typeof v === "number" && Number.isInteger(v);
 }

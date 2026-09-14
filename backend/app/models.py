@@ -43,5 +43,8 @@ class Window(Base):
     y = Column(Integer, nullable=False)
     w = Column(Integer, nullable=False)
     h = Column(Integer, nullable=False)
+    # 可选工件编号（藏品登记号）：去首尾空格后 ≤24 字符，同一布局内唯一；
+    # 可空——旧记录与旧客户端的请求一律按空值处理
+    label = Column(String(24), nullable=True)
 
     layout = relationship("Layout", back_populates="windows")

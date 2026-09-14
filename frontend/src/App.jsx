@@ -14,6 +14,7 @@ import {
   adjudicate,
   clampIntoInner,
   fieldErrors,
+  windowName,
 } from "./geometry.js";
 
 let tmpCounter = 0;
@@ -56,7 +57,7 @@ export default function App() {
           setWindows(
             [...layout.windows]
               .sort((a, b) => a.position - b.position)
-              .map(({ id, x, y, w, h }) => ({ id, x, y, w, h }))
+              .map(({ id, x, y, w, h, label }) => ({ id, x, y, w, h, label: label ?? "" }))
           );
           setSaved({ verdict: layout.verdict, result: layout.result });
         }
@@ -102,6 +103,27 @@ export default function App() {
     [verdictView]
   );
 
+  // 开窗 id → 展示名（编号或顺序号），冲突说明按编号指认每一扇窗
+  const nameById = useMemo(() => {
+    const m = new Map();
+    windows.forEach((w, i) => m.set(w.id, windowName(w, i)));
+    return m;
+  }, [windows]);
+
+  // 冲突说明：逐条列出哪扇窗侵入瑕疵区、哪两扇窗相互重叠
+  const conflictLines = useMemo(() => {
+    const result = verdictView.result;
+    if (!result) return [];
+    const nameOf = (id) => nameById.get(id) ?? `#${id}`;
+    const lines = (result.defect_conflicts ?? []).map(
+      (c) => `开窗 ${nameOf(c.window_id)} 侵入瑕疵区 ${c.defect_index + 1}`
+    );
+    (result.window_conflicts ?? []).forEach((c) => {
+      lines.push(`开窗 ${nameOf(c.window_a)} 与 开窗 ${nameOf(c.window_b)} 相互重叠`);
+    });
+    return lines;
+  }, [verdictView, nameById]);
+
   // 每个开窗的服务器字段错误（按提交次序对应行号）
   const rowErrorMap = useMemo(() => {
     const m = new Map();
@@ -145,7 +167,7 @@ export default function App() {
   }
 
   function addWindow(rect) {
-    setWindows((list) => [...list, { id: nextTmpId(), ...rect }]);
+    setWindows((list) => [...list, { id: nextTmpId(), label: "", ...rect }]);
     setSelectedId(null);
     markDirty();
   }
@@ -195,7 +217,7 @@ export default function App() {
       setWindows(
         [...data.windows]
           .sort((a, b) => a.position - b.position)
-          .map(({ id, x, y, w, h }) => ({ id, x, y, w, h }))
+          .map(({ id, x, y, w, h, label }) => ({ id, x, y, w, h, label: label ?? "" }))
       );
       setSaved({ verdict: data.verdict, result: data.result });
       setDirty(false);
@@ -236,6 +258,14 @@ export default function App() {
               : "（已保存的裁决结果）"}
         </span>
       </div>
+
+      {conflictLines.length > 0 ? (
+        <ul className="conflict-list" data-testid="conflict-list">
+          {conflictLines.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      ) : null}
 
       {banner ? (
         <p className={banner.type === "ok" ? "banner-ok" : "banner-error"}>{banner.text}</p>
@@ -281,11 +311,11 @@ export default function App() {
                     className="row-select"
                     onClick={() => setSelectedId(w.id)}
                   >
-                    #{i + 1} ({w.x}, {w.y}) {w.w}×{w.h}
+                    {windowName(w, i)} ({w.x}, {w.y}) {w.w}×{w.h}
                   </button>
                   {Object.entries({ ...errs, ...(serverErrs ?? {}) }).map(([k, v]) => (
                     <small key={k} className="error-text">
-                      {k}: {v}
+                      {k === "label" ? "编号" : k}: {v}
                     </small>
                   ))}
                 </li>

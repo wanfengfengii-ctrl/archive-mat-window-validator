@@ -27,7 +27,17 @@ export async function fetchDefects() {
 // 返回 {ok: true, data} 或 {ok: false, status, detail, fieldErrors}
 export async function submitLayout(windows) {
   const payload = {
-    windows: windows.map((w) => ({ x: w.x, y: w.y, w: w.w, h: w.h })),
+    windows: windows.map((w) => {
+      const label = (w.label ?? "").trim();
+      return {
+        x: w.x,
+        y: w.y,
+        w: w.w,
+        h: w.h,
+        // 空编号不发送（后端按空值处理），与旧客户端请求形状保持一致
+        ...(label === "" ? {} : { label }),
+      };
+    }),
   };
   const res = await fetch(`${BASE}/api/layout`, {
     method: "PUT",

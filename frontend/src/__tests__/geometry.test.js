@@ -4,9 +4,11 @@ import {
   INNER_BOTTOM,
   INNER_RIGHT,
   MARGIN,
+  MAX_LABEL_LENGTH,
   adjudicate,
   fieldErrors,
   rectsOverlap,
+  windowName,
 } from "../geometry.js";
 
 describe("半开矩形相交", () => {
@@ -81,5 +83,23 @@ describe("完整裁决", () => {
       { x: 200, y: 150, w: 80, h: 40 },
       { x: 620, y: 420, w: 60, h: 90 },
     ]);
+  });
+});
+
+describe("开窗展示名（工件编号或顺序号）", () => {
+  it("编号长度上限与后端一致", () => {
+    expect(MAX_LABEL_LENGTH).toBe(24);
+  });
+
+  it("填写了编号就用编号（去首尾空格）", () => {
+    expect(windowName({ label: "ZW-001" }, 0)).toBe("ZW-001");
+    expect(windowName({ label: "  ZW-001  " }, 2)).toBe("ZW-001");
+  });
+
+  it("未填写编号时退回顺序号", () => {
+    expect(windowName({ label: "" }, 0)).toBe("#1");
+    expect(windowName({ label: null }, 1)).toBe("#2");
+    expect(windowName({}, 2)).toBe("#3");
+    expect(windowName({ label: "   " }, 3)).toBe("#4");
   });
 });

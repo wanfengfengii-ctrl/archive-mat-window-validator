@@ -174,3 +174,124 @@ def test_empty_batch_is_valid_cuttable(client):
     r = _put(client, [])
     assert r.status_code == 200
     assert r.json()["verdict"] == "可裁切"
+
+
+# ---------- 可选工件编号 ----------
+
+def test_labels_saved_and_restored_after_refresh(client):
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 100, "h": 80, "label": "ZW-2026-001"},
+        {"x": 500, "y": 100, "w": 40, "h": 40, "label": "ZW-2026-002"},
+    ])
+    assert r.status_code == 200, r.text
+    assert [w["label"] for w in r.json()["windows"]] == ["ZW-2026-001", "ZW-2026-002"]
+
+    restored = client.get("/api/layout").json()
+    assert [w["label"] for w in restored["windows"]] == ["ZW-2026-001", "ZW-2026-002"]
+    assert [w["position"] for w in restored["windows"]] == [0, 1]
+
+
+def test_label_trimmed_before_persistence(client):
+    r = _put(client, [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "  A-1  "}])
+    assert r.status_code == 200
+    assert r.json()["windows"][0]["label"] == "A-1"
+    assert client.get("/api/layout").json()["windows"][0]["label"] == "A-1"
+
+
+def test_label_max_length_boundary(client):
+    ok = _put(client, [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "编" * 24}])
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["windows"][0]["label"] == "编" * 24
+
+    too_long = _put(client, [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "编" * 25}])
+    assert too_long.status_code == 422
+    assert "label" in too_long.json()["field_errors"][0]["fields"]
+
+
+def test_blank_and_missing_labels_stored_as_null(client):
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 10, "h": 10},                      # 旧客户端：未携带编号
+        {"x": 500, "y": 300, "w": 10, "h": 10, "label": None},       # 显式 null
+        {"x": 700, "y": 300, "w": 10, "h": 10, "label": "   "},      # 全空格 = 未填写
+    ])
+    assert r.status_code == 200, r.text
+    assert [w["label"] for w in r.json()["windows"]] == [None, None, None]
+    restored = client.get("/api/layout").json()
+    assert [w["label"] for w in restored["windows"]] == [None, None, None]
+
+
+def test_blank_labels_do_not_count_as_duplicates(client):
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 10, "h": 10, "label": ""},
+        {"x": 500, "y": 300, "w": 10, "h": 10, "label": "  "},
+    ])
+    assert r.status_code == 200, r.text
+
+
+def test_duplicate_labels_rejected_per_row_and_nothing_persisted(client):
+    _put(client, [{"x": 12, "y": 12, "w": 10, "h": 10, "label": "KEEP"}])
+    before = client.get("/api/layout").json()
+
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 10, "h": 10, "label": "DUP"},
+        {"x": 500, "y": 300, "w": 10, "h": 10},                # 合法行
+        {"x": 700, "y": 300, "w": 10, "h": 10, "label": "DUP"},
+    ])
+    assert r.status_code == 422
+    rows = r.json()["field_errors"]
+    # 只有涉及重复的两行报编号字段错误
+    assert [row["index"] for row in rows] == [0, 2]
+    assert all(set(row["fields"]) == {"label"} for row in rows)
+
+    # 整批不落库：最新记录保持原样
+    assert client.get("/api/layout").json() == before
+
+
+def test_duplicate_after_trimming_is_rejected(client):
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 10, "h": 10, "label": "A-1"},
+        {"x": 500, "y": 300, "w": 10, "h": 10, "label": "  A-1  "},
+    ])
+    assert r.status_code == 422
+    assert [row["index"] for row in r.json()["field_errors"]] == [0, 1]
+
+
+def test_label_too_long_rejected_and_nothing_persisted(client):
+    before = client.get("/api/layout").json()
+    r = _put(client, [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "X" * 25}])
+    assert r.status_code == 422
+    errs = r.json()["field_errors"]
+    assert errs[0]["index"] == 0 and set(errs[0]["fields"]) == {"label"}
+    assert client.get("/api/layout").json() == before
+
+
+def test_label_must_be_string(client):
+    for bad in (5, 3.5, True, {"a": 1}, ["A"]):
+        r = _put(client, [{"x": 300, "y": 300, "w": 10, "h": 10, "label": bad}])
+        assert r.status_code == 422, bad
+        assert "label" in r.json()["field_errors"][0]["fields"]
+
+
+def test_label_error_coexists_with_coordinate_errors(client):
+    r = _put(client, [{"x": 0, "y": 300, "w": 10, "h": 10, "label": "X" * 25}])
+    assert r.status_code == 422
+    fields = r.json()["field_errors"][0]["fields"]
+    assert set(fields) == {"x", "label"}
+
+
+def test_overlapping_labeled_windows_keep_labels_in_saved_verdict(client):
+    r = _put(client, [
+        {"x": 300, "y": 300, "w": 100, "h": 100, "label": "WIN-A"},
+        {"x": 350, "y": 350, "w": 100, "h": 100, "label": "WIN-B"},
+    ])
+    assert r.status_code == 200
+    body = r.json()
+    assert body["verdict"] == "不可裁切"
+    ids_by_label = {w["label"]: w["id"] for w in body["windows"]}
+    assert body["result"]["window_conflicts"] == [
+        {"window_a": ids_by_label["WIN-A"], "window_b": ids_by_label["WIN-B"]}
+    ]
+
+    restored = client.get("/api/layout").json()
+    assert [w["label"] for w in restored["windows"]] == ["WIN-A", "WIN-B"]
+    assert restored["result"] == body["result"]

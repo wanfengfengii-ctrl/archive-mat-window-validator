@@ -8,14 +8,17 @@ from sqlalchemy.orm import Session
 
 from . import engine as eng
 from .db import Base, engine as db_engine, get_db
+from .migrate import run_migrations
 from .models import Layout, Window
-from .validation import validate_payload
+from .validation import normalize_label, validate_payload
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 容器启动时一次性建表；幂等
     Base.metadata.create_all(bind=db_engine)
+    # 旧库补充后加的可空列（如 windows.label）；幂等
+    run_migrations(db_engine)
     yield
 
 
@@ -49,7 +52,15 @@ def defects() -> dict:
 
 def _serialize(layout: Layout) -> dict:
     windows = [
-        {"id": w.id, "x": w.x, "y": w.y, "w": w.w, "h": w.h, "position": w.position}
+        {
+            "id": w.id,
+            "x": w.x,
+            "y": w.y,
+            "w": w.w,
+            "h": w.h,
+            "position": w.position,
+            "label": w.label,
+        }
         for w in layout.windows
     ]
     result = dict(layout.result)
@@ -111,7 +122,14 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
     layout = Layout(verdict=verdict_data["verdict"], result={}, windows=[])
     for position, it in enumerate(items):
         layout.windows.append(
-            Window(position=position, x=it["x"], y=it["y"], w=it["w"], h=it["h"])
+            Window(
+                position=position,
+                x=it["x"],
+                y=it["y"],
+                w=it["w"],
+                h=it["h"],
+                label=normalize_label(it.get("label")),
+            )
         )
     db.add(layout)
     db.flush()  # 拿到 layout.id 与各 window.id

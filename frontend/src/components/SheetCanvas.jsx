@@ -1,4 +1,4 @@
-import { SHEET_WIDTH, SHEET_HEIGHT } from "../geometry.js";
+import { SHEET_WIDTH, SHEET_HEIGHT, windowName } from "../geometry.js";
 
 // 1000×700 毫米纸面的 SVG 画布；viewBox 与毫米同尺度，
 // 指针坐标用 getScreenCTM 逆变换直接换算成毫米，取整。
@@ -69,7 +69,7 @@ export default function SheetCanvas({
         </g>
       ))}
 
-      {windows.map((win) => {
+      {windows.map((win, index) => {
         if (win.id === "__draft__") {
           return (
             <rect
@@ -103,7 +103,7 @@ export default function SheetCanvas({
               onPointerDown={(e) => pointerDownWindow(e, win)}
             />
             <text x={win.x + 4} y={win.y + 18} className="window-label">
-              {win.id}
+              {windowName(win, index)}
             </text>
           </g>
         );

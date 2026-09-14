@@ -64,6 +64,20 @@ body {
   font-weight: 400;
 }
 
+.conflict-list {
+  margin: 0 0 10px;
+  padding: 10px 14px 10px 32px;
+  border: 1px solid var(--bad);
+  border-radius: 8px;
+  background: #fdecea;
+  color: var(--bad);
+  font-size: 13px;
+}
+
+.conflict-list li + li {
+  margin-top: 4px;
+}
+
 .banner-ok {
   color: var(--accent);
   margin: 4px 0;

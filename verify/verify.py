@@ -210,7 +210,123 @@ def main():
     )
     check("x+w=989 越界 → 422", status == 422, body)
 
-    section("8. 经 web（nginx）反代的端到端接线")
+    section("8. 工件编号（可选，布局内唯一）")
+    # 两个合法编号保存后刷新原样恢复
+    labeled = [
+        {"x": 300, "y": 300, "w": 100, "h": 80, "label": "ZW-2026-001"},
+        {"x": 500, "y": 100, "w": 40, "h": 40, "label": "ZW-2026-002"},
+    ]
+    status, body = request("PUT", f"{API_URL}/api/layout", {"windows": labeled})
+    check("带编号提交成功", status == 200, body)
+    check(
+        "响应带回两个编号",
+        [w.get("label") for w in body["windows"]] == ["ZW-2026-001", "ZW-2026-002"],
+        body,
+    )
+    status, restored = request("GET", f"{API_URL}/api/layout")
+    check(
+        "刷新后两个编号原样恢复",
+        [w.get("label") for w in restored["windows"]] == ["ZW-2026-001", "ZW-2026-002"],
+        restored,
+    )
+
+    # 首尾空格被去除后落库
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "  TRIM-1  "}]},
+    )
+    check(
+        "编号去首尾空格后保存",
+        status == 200 and body["windows"][0]["label"] == "TRIM-1",
+        body,
+    )
+
+    # 空编号按空值处理（未携带 / null / 全空格）
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"x": 300, "y": 300, "w": 10, "h": 10},
+                {"x": 500, "y": 300, "w": 10, "h": 10, "label": None},
+                {"x": 700, "y": 300, "w": 10, "h": 10, "label": "   "},
+            ]
+        },
+    )
+    check(
+        "未携带/null/全空格编号 → 存为空值（页面将显示顺序号）",
+        status == 200 and [w["label"] for w in body["windows"]] == [None, None, None],
+        body,
+    )
+
+    # 重复编号 → 逐行 422 且最新记录不变
+    status, before = request("GET", f"{API_URL}/api/layout")
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"x": 300, "y": 300, "w": 10, "h": 10, "label": "DUP"},
+                {"x": 500, "y": 300, "w": 10, "h": 10},
+                {"x": 700, "y": 300, "w": 10, "h": 10, "label": "DUP"},
+            ]
+        },
+    )
+    check(
+        "重复编号 → 422 且涉及的两行都报编号字段错误",
+        status == 422
+        and [r["index"] for r in body["field_errors"]] == [0, 2]
+        and all("label" in r["fields"] for r in body["field_errors"]),
+        body,
+    )
+    status, after = request("GET", f"{API_URL}/api/layout")
+    check("重复编号提交整批不落库（最新记录不变）", after == before, after)
+
+    # 超长编号 → 422 且整批不落库
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"x": 300, "y": 300, "w": 10, "h": 10, "label": "X" * 25}]},
+    )
+    check(
+        "编号超过 24 字符 → 422 且报编号字段",
+        status == 422 and "label" in body["field_errors"][0]["fields"],
+        body,
+    )
+    status, after = request("GET", f"{API_URL}/api/layout")
+    check("超长编号提交整批不落库", after == before, after)
+
+    # 带编号的重叠开窗：冲突双方即两编号开窗，刷新后编号仍在
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "windows": [
+                {"x": 300, "y": 300, "w": 100, "h": 100, "label": "WIN-A"},
+                {"x": 350, "y": 350, "w": 100, "h": 100, "label": "WIN-B"},
+            ]
+        },
+    )
+    ids_by_label = {w["label"]: w["id"] for w in body["windows"]}
+    check(
+        "带编号重叠开窗 → 不可裁切，冲突双方即两编号开窗",
+        body["verdict"] == "不可裁切"
+        and body["result"]["window_conflicts"]
+        == [{"window_a": ids_by_label["WIN-A"], "window_b": ids_by_label["WIN-B"]}]
+        and body["result"]["conflicting_window_ids"]
+        == sorted(ids_by_label.values()),
+        body,
+    )
+    status, restored = request("GET", f"{API_URL}/api/layout")
+    check(
+        "刷新后重叠开窗的编号与裁决一并恢复",
+        [w["label"] for w in restored["windows"]] == ["WIN-A", "WIN-B"]
+        and restored["verdict"] == "不可裁切",
+        restored,
+    )
+
+    section("9. 经 web（nginx）反代的端到端接线")
     try:
         with urllib.request.urlopen(f"{WEB_URL}/", timeout=10) as resp:
             html = resp.read().decode()
