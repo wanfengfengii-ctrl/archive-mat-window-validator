@@ -37,11 +37,12 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status==200 else 1)",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3).status==200 else 1)",
         ]
       interval: 3s
       timeout: 4s
       retries: 20
+      start_period: 5s
 
   web:
     build: ./frontend
@@ -51,10 +52,12 @@ services:
     ports:
       - "${WEB_PORT:-8080}:80"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost/ >/dev/null || exit 1"]
+      # 用 IPv4 字面量，避免 busybox wget 把 localhost 解析到 ::1 而拒连
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null || exit 1"]
       interval: 3s
       timeout: 4s
       retries: 20
+      start_period: 5s
 
   # 一次性端到端验收：对运行中的 api 与 web 反代打真实 HTTP 请求。
   # 运行：docker compose run --rm verify
