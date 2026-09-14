@@ -178,10 +178,14 @@ export default function App() {
     markDirty();
   }
 
-  // ---- 在纸面空白处拖放新开窗 ----
+  // ---- 在纸面空白处（含瑕疵区上方）拖放新开窗 ----
   function handleDrawStart(event) {
+    // 只响应鼠标主键（button 0）；右键、中键不发起开窗
+    if (event.button !== 0) return;
     const svg = event.currentTarget;
-    if (event.target !== svg && !event.target.classList.contains("paper")) return;
+    // 落在已有开窗上的指针事件已被开窗自身 stopPropagation，
+    // 因此能冒泡到画布的目标（纸面、瑕疵区矩形及其文字）一律视为空白处，
+    // 从瑕疵区内起拖同样可以新建开窗并在松手后即时显示冲突。
     setSelectedId(null);
     const start = clientToMm(svg, event);
     const [sx, sy] = clampIntoInner(Math.round(start.x), Math.round(start.y));
@@ -198,15 +202,26 @@ export default function App() {
       };
       setDraftRect(current);
     }
-    function onUp() {
+    function stop() {
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    }
+    function onUp() {
+      stop();
       setDraftRect(null);
       if (current && current.w >= 1 && current.h >= 1) {
         addWindow(current);
       }
     }
+    // 设备（触屏/手写笔/系统手势）触发指针取消：立即终止拖放并清除草稿，不新增开窗
+    function onCancel() {
+      stop();
+      setDraftRect(null);
+    }
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp, { once: true });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
   }
 
   async function handleSubmit() {

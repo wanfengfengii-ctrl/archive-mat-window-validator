@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App.jsx";
 
@@ -18,12 +18,13 @@ const cleanResult = {
 
 // jsdom 的 PointerEvent init 不携带 clientX/clientY，
 // 这里用 MouseEvent 派发 pointer* 类型事件（React 按 type 绑定监听）。
-function firePointer(node, type, x, y) {
+function firePointer(node, type, x, y, button = 0) {
   const ev = new MouseEvent(type, {
     bubbles: true,
     cancelable: true,
     clientX: x,
     clientY: y,
+    button,
   });
   node.dispatchEvent(ev);
 }
@@ -32,6 +33,13 @@ function dragDraw(svg, x1, y1, x2, y2) {
   firePointer(svg, "pointerdown", x1, y1);
   firePointer(window, "pointermove", x2, y2);
   firePointer(window, "pointerup", x2, y2);
+}
+
+// 在指定画布元素（如瑕疵区矩形）上按下，其余事件仍派发到 window
+function dragDrawFrom(startTarget, x1, y1, x2, y2, button = 0) {
+  firePointer(startTarget, "pointerdown", x1, y1, button);
+  firePointer(window, "pointermove", x2, y2);
+  firePointer(window, "pointerup", x2, y2, button);
 }
 
 beforeEach(() => {
@@ -111,6 +119,80 @@ describe("拖放开窗与即时裁决", () => {
     dragDraw(svg, 280, 150, 320, 180);
     await screen.findByText(/#1 \(280, 150\) 40×30/);
     expect(screen.getByTestId("verdict-banner")).toHaveAttribute("data-verdict", "可裁切");
+  });
+
+  it("从瑕疵区内起拖也能新建开窗，并即时显示冲突", async () => {
+    render(<App />);
+    await screen.findByText(/提交方案并裁决/);
+    // 直接在瑕疵区矩形（而非纸面/画布根节点）上按下指针
+    const defect = document.querySelectorAll(".defect")[0];
+    // 拖放范围完全落在第一个瑕疵区 [200,280)×[150,190) 内
+    dragDrawFrom(defect, 210, 160, 260, 185);
+
+    expect(await screen.findByText(/#1 \(210, 160\) 50×25/)).toBeInTheDocument();
+    const banner = screen.getByTestId("verdict-banner");
+    expect(banner).toHaveAttribute("data-verdict", "不可裁切");
+    expect(document.querySelector(".window-conflict")).not.toBeNull();
+    expect(document.querySelector(".defect-hit")).not.toBeNull();
+  });
+
+  it("右键拖放不会新建观察窗", () => {
+    render(<App />);
+    const svg = document.querySelector(".sheet");
+    act(() => {
+      // button=2 为鼠标右键
+      dragDrawFrom(svg, 300, 300, 400, 360, 2);
+    });
+
+    expect(document.querySelector(".window-draft")).toBeNull();
+    expect(document.querySelector(".window")).toBeNull();
+    expect(screen.queryByText(/#1 /)).not.toBeInTheDocument();
+  });
+
+  it("右键拖动已有开窗不会移动它", async () => {
+    render(<App />);
+    const svg = document.querySelector(".sheet");
+    dragDraw(svg, 300, 300, 400, 360);
+    await screen.findByText(/#1 \(300, 300\) 100×60/);
+
+    const win = document.querySelector(".window");
+    act(() => {
+      firePointer(win, "pointerdown", 350, 330, 2);
+      firePointer(window, "pointermove", 500, 500, 2);
+      firePointer(window, "pointerup", 500, 500, 2);
+    });
+
+    expect(screen.getByText(/#1 \(300, 300\) 100×60/)).toBeInTheDocument();
+  });
+
+  it("拖放中收到指针取消：立即清除草稿，之后移动不再跟随且不新增开窗", () => {
+    render(<App />);
+    const svg = document.querySelector(".sheet");
+    // 主键开始拖放并移动一次，草稿出现
+    act(() => {
+      firePointer(svg, "pointerdown", 300, 300);
+      firePointer(window, "pointermove", 360, 360);
+    });
+    expect(document.querySelector(".window-draft")).not.toBeNull();
+
+    // 设备触发 pointercancel：草稿立即消失
+    act(() => {
+      firePointer(window, "pointercancel", 360, 360);
+    });
+    expect(document.querySelector(".window-draft")).toBeNull();
+
+    // 取消后指针继续移动：草稿不得重新出现或跟随
+    act(() => {
+      firePointer(window, "pointermove", 450, 450);
+    });
+    expect(document.querySelector(".window-draft")).toBeNull();
+
+    // 取消后即使再松手也不会补建开窗
+    act(() => {
+      firePointer(window, "pointerup", 450, 450);
+    });
+    expect(document.querySelector(".window")).toBeNull();
+    expect(screen.queryByText(/#1 /)).not.toBeInTheDocument();
   });
 });
 

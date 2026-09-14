@@ -19,6 +19,8 @@ export default function SheetCanvas({
   }
 
   function pointerDownWindow(event, win) {
+    // 只响应鼠标主键；右键、中键不发起拖动
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     onSelect(win.id);
@@ -32,13 +34,16 @@ export default function SheetCanvas({
       const p = toMm(svg, ev);
       onMove(win.id, Math.round(p.x - grabX), Math.round(p.y - grabY));
     }
+    function stop() {
+      window.removeEventListener("pointermove", drag);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    }
 
     window.addEventListener("pointermove", drag);
-    window.addEventListener(
-      "pointerup",
-      () => window.removeEventListener("pointermove", drag),
-      { once: true }
-    );
+    // pointerup 正常结束；pointercancel（设备/系统手势打断）同样立即终止
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   }
 
   const conflictSet = new Set(conflictingIds);
