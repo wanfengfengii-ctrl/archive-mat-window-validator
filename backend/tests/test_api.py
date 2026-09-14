@@ -20,7 +20,13 @@ def test_defects_endpoint_exposes_builtin_readonly_zones(client):
 
 def test_empty_layout_before_any_submission(client):
     data = client.get("/api/layout").json()
-    assert data == {"verdict": None, "windows": [], "result": None, "created_at": None}
+    assert data == {
+        "verdict": None,
+        "step": None,
+        "windows": [],
+        "result": None,
+        "created_at": None,
+    }
 
 
 def test_valid_clean_submission_persists_and_is_cuttable(client):
@@ -295,3 +301,103 @@ def test_overlapping_labeled_windows_keep_labels_in_saved_verdict(client):
     restored = client.get("/api/layout").json()
     assert [w["label"] for w in restored["windows"]] == ["WIN-A", "WIN-B"]
     assert restored["result"] == body["result"]
+
+
+# ---------- 定位步长（1/5/10 毫米） ----------
+
+def _put_with_step(client, step, windows):
+    return client.put("/api/layout", json={"step": step, "windows": windows})
+
+
+def test_step_saved_and_restored_after_refresh(client):
+    r = _put_with_step(client, 5, [{"x": 302, "y": 302, "w": 105, "h": 60}])
+    assert r.status_code == 200, r.text
+    assert r.json()["step"] == 5
+
+    restored = client.get("/api/layout").json()
+    assert restored["step"] == 5
+    assert [(w["x"], w["y"], w["w"], w["h"]) for w in restored["windows"]] == [
+        (302, 302, 105, 60)
+    ]
+    assert restored["verdict"] == "可裁切"
+
+
+def test_step5_conflict_layout_roundtrip_keeps_verdict_and_highlights(client):
+    # 两扇开窗都在 5 毫米刻度上且相互重叠
+    r = _put_with_step(client, 5, [
+        {"x": 302, "y": 302, "w": 105, "h": 60},
+        {"x": 332, "y": 332, "w": 105, "h": 60},
+    ])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict"] == "不可裁切"
+    ids = [w["id"] for w in body["windows"]]
+    assert body["result"]["conflicting_window_ids"] == sorted(ids)
+
+    # 保存刷新后：坐标、结论与冲突高亮与提交前一致
+    restored = client.get("/api/layout").json()
+    assert restored["step"] == 5
+    assert [(w["x"], w["y"], w["w"], w["h"]) for w in restored["windows"]] == [
+        (302, 302, 105, 60),
+        (332, 332, 105, 60),
+    ]
+    assert restored["verdict"] == body["verdict"]
+    assert restored["result"] == body["result"]
+
+
+def test_off_grid_submission_rejected_per_row_and_record_unchanged(client):
+    _put_with_step(client, 5, [{"x": 302, "y": 302, "w": 105, "h": 60}])
+    before = client.get("/api/layout").json()
+
+    # 绕过页面提交偏离 5 毫米刻度的坐标
+    r = _put_with_step(client, 5, [
+        {"x": 300, "y": 302, "w": 105, "h": 60},   # x 偏离刻度
+        {"x": 302, "y": 302, "w": 103, "h": 60},   # w 偏离刻度
+        {"x": 302, "y": 302, "w": 105, "h": 60},   # 合法行
+    ])
+    assert r.status_code == 422
+    rows = r.json()["field_errors"]
+    assert [row["index"] for row in rows] == [0, 1]
+    assert set(rows[0]["fields"]) == {"x"}
+    assert set(rows[1]["fields"]) == {"w"}
+
+    # 不产生新布局：最新记录未改变
+    assert client.get("/api/layout").json() == before
+
+
+def test_all_supported_steps_accepted(client):
+    for step in (1, 5, 10):
+        r = _put_with_step(client, step, [{"x": 312, "y": 312, "w": 110, "h": 60}])
+        assert r.status_code == 200, step
+        assert r.json()["step"] == step
+        assert client.get("/api/layout").json()["step"] == step
+
+
+def test_invalid_step_rejected_and_nothing_persisted(client):
+    before = client.get("/api/layout").json()
+    for bad in (3, "5", 5.0, True, [5]):
+        r = _put_with_step(client, bad, [{"x": 302, "y": 302, "w": 105, "h": 60}])
+        assert r.status_code == 422, bad
+    assert client.get("/api/layout").json() == before
+
+
+# ---------- 兼容：旧客户端与旧记录一律按 1 毫米处理 ----------
+
+def test_old_client_without_step_defaults_to_1mm(client):
+    # 旧客户端：不携带 step，坐标按 1 毫米处理（任意整数合法）
+    r = _put(client, [{"x": 300, "y": 301, "w": 101, "h": 62}])
+    assert r.status_code == 200, r.text
+    assert r.json()["step"] == 1
+    assert r.json()["windows"][0]["x"] == 300
+
+    restored = client.get("/api/layout").json()
+    assert restored["step"] == 1
+    assert [(w["x"], w["y"], w["w"], w["h"]) for w in restored["windows"]] == [
+        (300, 301, 101, 62)
+    ]
+
+
+def test_explicit_null_step_defaults_to_1mm(client):
+    r = client.put("/api/layout", json={"step": None, "windows": [{"x": 300, "y": 300, "w": 10, "h": 10}]})
+    assert r.status_code == 200
+    assert r.json()["step"] == 1

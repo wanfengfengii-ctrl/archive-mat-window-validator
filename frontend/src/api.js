@@ -25,8 +25,10 @@ export async function fetchDefects() {
 }
 
 // 返回 {ok: true, data} 或 {ok: false, status, detail, fieldErrors}
-export async function submitLayout(windows) {
+export async function submitLayout(windows, step) {
   const payload = {
+    // 定位步长随布局一起提交保存；读取时恢复同一选择
+    step,
     windows: windows.map((w) => {
       const label = (w.label ?? "").trim();
       return {

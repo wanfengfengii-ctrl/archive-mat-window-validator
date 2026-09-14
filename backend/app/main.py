@@ -10,7 +10,7 @@ from . import engine as eng
 from .db import Base, engine as db_engine, get_db
 from .migrate import run_migrations
 from .models import Layout, Window
-from .validation import normalize_label, validate_payload
+from .validation import normalize_label, parse_step, validate_payload
 
 
 @asynccontextmanager
@@ -66,6 +66,8 @@ def _serialize(layout: Layout) -> dict:
     result = dict(layout.result)
     return {
         "verdict": layout.verdict,
+        # 旧记录缺少步长值：按 1 毫米处理
+        "step": layout.step if layout.step is not None else eng.DEFAULT_STEP,
         "windows": windows,
         "result": result,
         "created_at": layout.created_at.isoformat() if layout.created_at else None,
@@ -78,7 +80,7 @@ def get_latest_layout(db: Session = Depends(get_db)) -> JSONResponse:
     layout = db.scalar(select(Layout).order_by(Layout.id.desc()).limit(1))
     if layout is None:
         return JSONResponse(
-            {"verdict": None, "windows": [], "result": None, "created_at": None}
+            {"verdict": None, "step": None, "windows": [], "result": None, "created_at": None}
         )
     return JSONResponse(_serialize(layout))
 
@@ -97,6 +99,7 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
 
     try:
         row_errors = validate_payload(body)
+        step = parse_step(body)
     except ValueError as exc:
         return JSONResponse(
             status_code=422,
@@ -119,7 +122,7 @@ async def submit_layout(request: Request, db: Session = Depends(get_db)):
 
     # 临时 id（=数组下标）映射到真实 id：先算好开窗行，裁决结果中替换 id
     # 为保证“刷新恢复同一布局”，这里直接用数据库 id 重新生成裁决结果。
-    layout = Layout(verdict=verdict_data["verdict"], result={}, windows=[])
+    layout = Layout(verdict=verdict_data["verdict"], result={}, step=step, windows=[])
     for position, it in enumerate(items):
         layout.windows.append(
             Window(

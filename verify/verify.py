@@ -326,7 +326,71 @@ def main():
         restored,
     )
 
-    section("9. 经 web（nginx）反代的端到端接线")
+    section("9. 定位步长（1/5/10 毫米）")
+    # 5 毫米步长随布局保存；开窗相互重叠 → 不可裁切
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {
+            "step": 5,
+            "windows": [
+                {"x": 302, "y": 302, "w": 105, "h": 60},
+                {"x": 332, "y": 332, "w": 105, "h": 60},
+            ],
+        },
+    )
+    check("5 毫米步长随布局提交成功", status == 200 and body.get("step") == 5, body)
+    check("重叠开窗裁决为不可裁切", body["verdict"] == "不可裁切", body)
+    saved_conflicts = body["result"]["conflicting_window_ids"]
+    status, restored = request("GET", f"{API_URL}/api/layout")
+    check(
+        "刷新后步长、坐标、结论与冲突高亮一致",
+        restored["step"] == 5
+        and [(w["x"], w["y"], w["w"], w["h"]) for w in restored["windows"]]
+        == [(302, 302, 105, 60), (332, 332, 105, 60)]
+        and restored["verdict"] == "不可裁切"
+        and restored["result"]["conflicting_window_ids"] == saved_conflicts,
+        restored,
+    )
+
+    # 绕过页面提交偏离刻度的坐标 → 逐行字段错误且不产生新布局
+    status, before = request("GET", f"{API_URL}/api/layout")
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"step": 5, "windows": [{"x": 300, "y": 302, "w": 105, "h": 60}]},
+    )
+    check(
+        "偏离 5 毫米刻度 → 422 且按行返回字段错误",
+        status == 422
+        and body["field_errors"][0]["index"] == 0
+        and "x" in body["field_errors"][0]["fields"],
+        body,
+    )
+    status, after = request("GET", f"{API_URL}/api/layout")
+    check("偏离刻度提交不产生新布局（最新记录未改变）", after == before, after)
+
+    # 非法步长值 → 422
+    status, body = request(
+        "PUT", f"{API_URL}/api/layout", {"step": 3, "windows": []}
+    )
+    check("非法步长（3 毫米）→ 422", status == 422, body)
+
+    # 旧客户端不携带步长 → 按 1 毫米处理，旧格式请求成功保存
+    status, body = request(
+        "PUT",
+        f"{API_URL}/api/layout",
+        {"windows": [{"x": 300, "y": 301, "w": 101, "h": 62}]},
+    )
+    check(
+        "旧格式请求（无步长）按 1 毫米保存",
+        status == 200 and body.get("step") == 1 and body["windows"][0]["x"] == 300,
+        body,
+    )
+    status, restored = request("GET", f"{API_URL}/api/layout")
+    check("旧格式布局刷新后步长恢复为 1", restored["step"] == 1, restored)
+
+    section("10. 经 web（nginx）反代的端到端接线")
     try:
         with urllib.request.urlopen(f"{WEB_URL}/", timeout=10) as resp:
             html = resp.read().decode()

@@ -1,7 +1,9 @@
 import pytest
 
 from app.engine import (
+    DEFAULT_STEP,
     DEFECTS,
+    GRID_STEPS,
     INNER_BOTTOM,
     INNER_RIGHT,
     MARGIN,
@@ -79,6 +81,54 @@ def test_invalid_fields(x, y, w, h, bad_fields):
 def test_all_fields_invalid_reported_at_once():
     errs = field_errors("a", -1, 0, 0)
     assert set(errs.keys()) == {"x", "y", "w", "h"}
+
+
+# ---------- 定位步长刻度校验 ----------
+
+def test_grid_step_constants():
+    assert GRID_STEPS == (1, 5, 10)
+    assert DEFAULT_STEP == 1
+
+
+def test_step1_imposes_no_grid_errors():
+    # 默认（缺省）1 毫米：任意整数坐标合法，旧行为不变
+    assert field_errors(300, 301, 101, 62) == {}
+    assert field_errors(300, 301, 101, 62, 1) == {}
+
+
+def test_step5_on_grid_window_valid():
+    # 刻度基准为安全内区左上角 (12,12)：302 = 12 + 58×5
+    assert field_errors(302, 302, 105, 60, 5) == {}
+
+
+def test_step10_on_grid_window_valid():
+    # 312 = 12 + 30×10
+    assert field_errors(312, 312, 110, 60, 10) == {}
+
+
+@pytest.mark.parametrize(
+    "x,y,w,h,step,bad_fields",
+    [
+        (300, 302, 105, 60, 5, {"x"}),     # (300-12) % 5 = 3
+        (302, 300, 105, 60, 5, {"y"}),
+        (302, 302, 103, 60, 5, {"w"}),     # 103 不是 5 的倍数
+        (302, 302, 105, 62, 5, {"h"}),
+        (300, 300, 103, 62, 5, {"x", "y", "w", "h"}),
+        (303, 312, 110, 60, 10, {"x"}),    # 10 毫米步长下 303-12=291 不在刻度上
+        (312, 312, 105, 65, 10, {"w", "h"}),
+    ],
+)
+def test_off_grid_fields_flagged(x, y, w, h, step, bad_fields):
+    errs = field_errors(x, y, w, h, step)
+    assert set(errs.keys()) == bad_fields
+    assert all("刻度" in errs[k] for k in bad_fields)
+
+
+def test_grid_error_does_not_stack_on_range_error():
+    # x=0 已报压边安全区错误，不再叠加刻度错误
+    errs = field_errors(0, 302, 105, 60, 5)
+    assert set(errs.keys()) == {"x"}
+    assert "安全区" in errs["x"]
 
 
 # ---------- 内置瑕疵区 ----------

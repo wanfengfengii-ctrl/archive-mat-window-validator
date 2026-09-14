@@ -4,6 +4,8 @@ import WindowForm from "./components/WindowForm.jsx";
 import { fetchDefects, fetchLayout, submitLayout } from "./api.js";
 import {
   DEFECTS,
+  DEFAULT_STEP,
+  GRID_STEPS,
   INNER_BOTTOM,
   INNER_RIGHT,
   MARGIN,
@@ -14,6 +16,7 @@ import {
   adjudicate,
   clampIntoInner,
   fieldErrors,
+  snapRect,
   windowName,
 } from "./geometry.js";
 
@@ -41,6 +44,7 @@ export default function App() {
   const [windows, setWindows] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [draftRect, setDraftRect] = useState(null); // 正在拖放的新开窗
+  const [step, setStep] = useState(DEFAULT_STEP); // 定位步长（毫米）
   const [saved, setSaved] = useState(null); // 最近一次服务器裁决
   const [dirty, setDirty] = useState(false);
   const [submitRows, setSubmitRows] = useState([]); // 422 逐字段错误
@@ -53,6 +57,8 @@ export default function App() {
       .then(([d, layout]) => {
         if (!alive) return;
         if (d.defects?.length) setDefects(d.defects.map((z) => ({ ...z })));
+        // 恢复已保存的步长选择；旧记录缺少该值时按 1 毫米处理
+        if (layout.step != null) setStep(layout.step);
         if (layout.windows.length > 0) {
           setWindows(
             [...layout.windows]
@@ -72,15 +78,15 @@ export default function App() {
   // 本地即时预览裁决（提交以后端结果为准）
   const verdictData = useMemo(() => adjudicate(windows), [windows]);
 
-  // 本地字段非法（越过安全区等）时也不能给出“可裁切”
+  // 本地字段非法（越过安全区、偏离所选步长刻度等）时也不能给出“可裁切”
   const localInvalidIds = useMemo(
     () =>
       new Set(
         windows
-          .filter((win) => Object.keys(fieldErrors(win.x, win.y, win.w, win.h)).length > 0)
+          .filter((win) => Object.keys(fieldErrors(win.x, win.y, win.w, win.h, step)).length > 0)
           .map((w) => w.id)
       ),
-    [windows]
+    [windows, step]
   );
 
   // 页面上唯一的结论：未提交且有改动时显示“未保存预览”
@@ -136,15 +142,26 @@ export default function App() {
     setSubmitRows([]);
   }
 
+  // 切换定位步长：其后的拖放、移动与表单编辑都按新步长吸附；
+  // 步长随布局一起提交保存，因此切换也算未保存改动
+  function changeStep(next) {
+    setStep(next);
+    markDirty();
+  }
+
   function updateWindow(id, patch) {
     setWindows((list) =>
       list.map((w) => {
         if (w.id !== id) return w;
         const next = { ...w, ...patch };
-        // 本地编辑也要保证整窗在安全区内
-        if (patch.w !== undefined || patch.h !== undefined) {
-          next.w = Math.min(Math.max(next.w, 1), INNER_RIGHT - next.x);
-          next.h = Math.min(Math.max(next.h, 1), INNER_BOTTOM - next.y);
+        // 几何字段的表单编辑按当前步长即时吸附（编号等文本字段除外）
+        if (
+          patch.x !== undefined ||
+          patch.y !== undefined ||
+          patch.w !== undefined ||
+          patch.h !== undefined
+        ) {
+          Object.assign(next, snapRect(next.x, next.y, next.w, next.h, step));
         }
         return next;
       })
@@ -158,7 +175,8 @@ export default function App() {
         w.id === id
           ? (() => {
               const [cx, cy] = clampTopLeft(x, y, w.w, w.h);
-              return { ...w, x: cx, y: cy };
+              const snapped = snapRect(cx, cy, w.w, w.h, step);
+              return { ...w, x: snapped.x, y: snapped.y, w: snapped.w, h: snapped.h };
             })()
           : w
       )
@@ -200,7 +218,8 @@ export default function App() {
         w: Math.abs(ex - sx),
         h: Math.abs(ey - sy),
       };
-      setDraftRect(current);
+      // 草稿即时按当前步长吸附，松手落窗的坐标与之一致
+      setDraftRect(snapRect(current.x, current.y, current.w, current.h, step));
     }
     function stop() {
       window.removeEventListener("pointermove", onMove);
@@ -211,7 +230,7 @@ export default function App() {
       stop();
       setDraftRect(null);
       if (current && current.w >= 1 && current.h >= 1) {
-        addWindow(current);
+        addWindow(snapRect(current.x, current.y, current.w, current.h, step));
       }
     }
     // 设备（触屏/手写笔/系统手势）触发指针取消：立即终止拖放并清除草稿，不新增开窗
@@ -226,7 +245,7 @@ export default function App() {
 
   async function handleSubmit() {
     setBanner(null);
-    const result = await submitLayout(windows);
+    const result = await submitLayout(windows, step);
     if (result.ok) {
       const { data } = result;
       setWindows(
@@ -234,12 +253,14 @@ export default function App() {
           .sort((a, b) => a.position - b.position)
           .map(({ id, x, y, w, h, label }) => ({ id, x, y, w, h, label: label ?? "" }))
       );
+      if (data.step != null) setStep(data.step);
       setSaved({ verdict: data.verdict, result: data.result });
       setDirty(false);
       setSubmitRows([]);
       setSelectedId(null); // 临时 id 已被数据库 id 取代，清掉失效选中
       setBanner({ type: "ok", text: "方案已保存" });
     } else {
+      // 整次未保存：保留草稿、选中项与即时裁决，修正后可直接重试
       setSubmitRows(result.fieldErrors);
       setBanner({ type: "error", text: result.detail });
     }
@@ -288,6 +309,29 @@ export default function App() {
 
       <main className="layout">
         <section className="canvas-wrap">
+          <div
+            className="step-picker"
+            data-testid="step-picker"
+            role="radiogroup"
+            aria-label="定位步长"
+          >
+            <span className="step-picker-label">定位步长</span>
+            {GRID_STEPS.map((s) => (
+              <label
+                key={s}
+                className={step === s ? "step-option step-option-active" : "step-option"}
+              >
+                <input
+                  type="radio"
+                  name="step"
+                  value={s}
+                  checked={step === s}
+                  onChange={() => changeStep(s)}
+                />
+                {s} 毫米
+              </label>
+            ))}
+          </div>
           <SheetCanvas
             defects={defects}
             windows={draftRect ? [...windows, { id: "__draft__", ...draftRect }] : windows}
@@ -298,7 +342,7 @@ export default function App() {
             onMove={moveWindow}
             onDrawStart={handleDrawStart}
           />
-          <p className="hint">在纸面空白处按住拖放可新开窗；拖动开窗可移动（坐标自动取整并限制在安全区内）。</p>
+          <p className="hint">在纸面空白处按住拖放可新开窗；拖动开窗可移动（坐标按所选步长吸附并限制在安全区内）。</p>
         </section>
 
         <aside className="panel">
@@ -312,7 +356,7 @@ export default function App() {
           <h2>开窗列表（{windows.length}）</h2>
           <ul className="window-list">
             {windows.map((w, i) => {
-              const errs = fieldErrors(w.x, w.y, w.w, w.h);
+              const errs = fieldErrors(w.x, w.y, w.w, w.h, step);
               const serverErrs = rowErrorMap.get(w.id);
               const bad = conflictingIds.has(w.id) || localInvalidIds.has(w.id);
               return (

@@ -11,6 +11,9 @@
   [620,680) × [420,510)
 可用内区（压边安全区向内）：
   12 ≤ x，x+w ≤ 988，12 ≤ y，y+h ≤ 688。
+
+定位步长：提交可携带 1/5/10 毫米步长，裁决前逐字段校验每扇开窗
+是否符合刻度（基准为安全内区左上角）。
 """
 from __future__ import annotations
 
@@ -32,6 +35,13 @@ DEFECTS: tuple[tuple[int, int, int, int], ...] = (
 VERDICT_CUTTABLE = "可裁切"
 VERDICT_REJECTED = "不可裁切"
 
+# --- 定位步长（毫米） ---
+# 技师按量尺精度选择 1 / 5 / 10 毫米步长；刻度以安全内区左上角
+# (MARGIN, MARGIN) 为基准：合法坐标满足 (v - MARGIN) % step == 0，
+# 合法尺寸满足 v % step == 0。旧客户端与旧记录一律按 1 毫米处理。
+GRID_STEPS = (1, 5, 10)
+DEFAULT_STEP = 1
+
 
 def rects_positive_overlap(a, b) -> bool:
     """两个半开矩形是否有正面积相交。
@@ -46,11 +56,12 @@ def rects_positive_overlap(a, b) -> bool:
     return overlap_w > 0 and overlap_h > 0
 
 
-def field_errors(x, y, w, h) -> dict[str, str]:
+def field_errors(x, y, w, h, step: int = DEFAULT_STEP) -> dict[str, str]:
     """逐字段校验。返回 {字段: 错误信息}，合法时为空 dict。
 
     非法的可能是：不是整数（None/非 int）、宽高小于 1、
-    坐标为负、越过压边安全区。
+    坐标为负、越过压边安全区、偏离所选步长刻度。
+    step 为定位步长（1/5/10 毫米），刻度基准为安全内区左上角。
     """
     errors: dict[str, str] = {}
 
@@ -84,6 +95,17 @@ def field_errors(x, y, w, h) -> dict[str, str]:
         errors["x"] = f"x+宽 必须 ≤ {INNER_RIGHT}（压边安全区）"
     if is_int(y) and is_int(h) and h >= 1 and y >= MARGIN and y + h > INNER_BOTTOM:
         errors["y"] = f"y+高 必须 ≤ {INNER_BOTTOM}（压边安全区）"
+
+    # 刻度校验：字段本身合法时才检查，避免在一个字段上堆叠多条错误
+    if step > 1:
+        if "x" not in errors and (x - MARGIN) % step != 0:
+            errors["x"] = f"x 须符合 {step} 毫米刻度"
+        if "y" not in errors and (y - MARGIN) % step != 0:
+            errors["y"] = f"y 须符合 {step} 毫米刻度"
+        if "w" not in errors and w % step != 0:
+            errors["w"] = f"宽须符合 {step} 毫米刻度"
+        if "h" not in errors and h % step != 0:
+            errors["h"] = f"高须符合 {step} 毫米刻度"
 
     return errors
 

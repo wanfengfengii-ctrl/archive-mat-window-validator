@@ -103,6 +103,36 @@ body {
   padding: 10px;
 }
 
+.step-picker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 2px 8px;
+  font-size: 13px;
+}
+
+.step-picker-label {
+  color: #6b6257;
+  font-weight: 600;
+}
+
+.step-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid #bfb6a6;
+  border-radius: 6px;
+}
+
+.step-option-active {
+  border-color: var(--accent);
+  background: #e8f5ec;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .sheet {
   width: 100%;
   height: auto;

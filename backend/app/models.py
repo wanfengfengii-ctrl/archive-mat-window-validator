@@ -21,6 +21,8 @@ class Layout(Base):
     verdict = Column(String(16), nullable=False)
     # 完整裁决：defect_conflicts / window_conflicts / conflicting_window_ids
     result = Column(JSON, nullable=False)
+    # 定位步长（毫米）：1/5/10；可空——旧记录缺少该值，读取时按 1 毫米处理
+    step = Column(Integer, nullable=True)
 
     windows = relationship(
         "Window",

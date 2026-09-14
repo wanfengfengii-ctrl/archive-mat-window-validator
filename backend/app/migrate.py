@@ -8,14 +8,26 @@ from __future__ import annotations
 
 from sqlalchemy import inspect, text
 
+# 后加的可空列：(表名, 列名, 补充列的 ALTER 语句)
+_PATCHES: tuple[tuple[str, str, str], ...] = (
+    ("windows", "label", "ALTER TABLE windows ADD COLUMN label VARCHAR(24)"),
+    ("layouts", "step", "ALTER TABLE layouts ADD COLUMN step INTEGER"),
+)
+
 
 def run_migrations(db_engine) -> None:
-    """为既有 windows 表补充可空 label 列（幂等）。"""
+    """为既有表补充后加的可空列（幂等）。"""
     inspector = inspect(db_engine)
-    if "windows" not in inspector.get_table_names():
-        return
-    columns = {col["name"] for col in inspector.get_columns("windows")}
-    if "label" in columns:
+    tables = set(inspector.get_table_names())
+    patches: list[str] = []
+    for table, column, ddl in _PATCHES:
+        if table not in tables:
+            continue
+        columns = {col["name"] for col in inspector.get_columns(table)}
+        if column not in columns:
+            patches.append(ddl)
+    if not patches:
         return
     with db_engine.begin() as conn:
-        conn.execute(text("ALTER TABLE windows ADD COLUMN label VARCHAR(24)"))
+        for ddl in patches:
+            conn.execute(text(ddl))
